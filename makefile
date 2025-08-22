@@ -19,8 +19,11 @@ reset_venv rv:
 	TMPDIR=$$HOME/.cache/pip-tmp pip install -r requirements.txt
 	@echo "Finished resetting logs"
 
+#copy_all cpa:
+#	scp -r cs3f7@mill.mst.edu:~/custom_Grid/saved_experiments /home/student/REU/custom_Grid/
+
 copy_all cpa:
-	scp -r cs3f7@mill.mst.edu:~/custom_Grid/saved_experiments /home/student/REU/custom_Grid/
+	scp -r kysp2d@mill.mst.edu:"~/coles_custom_Grid/dynamic-miner-path-planning/saved_experiments" /home/student/REU/custom_Grid/
 
 tensorboard tb:
 	pkill tensorboard || true
