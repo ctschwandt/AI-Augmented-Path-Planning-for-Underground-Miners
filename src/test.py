@@ -203,22 +203,22 @@ def train_all_models(timesteps: int = 1_000_000):
             
     models_to_train = [
         {
-            "grid_file": "mine_20x20.txt", "arch": None, "reward_fn": get_reward_d, 
-            "is_att": False,
+            "grid_file": "mine_20x20.txt", "arch": "attn", "reward_fn": get_reward_d, 
+            "is_att": True,
             "fallback": False,
             #"conf": 0.5,
             #"tag": "reu_cnn_channels"
         },
         {
-            "grid_file": "mine_30x30.txt", "arch": None, "reward_fn": get_reward_d, 
-            "is_att": False,
+            "grid_file": "mine_30x30.txt", "arch": "attn", "reward_fn": get_reward_d, 
+            "is_att": True,
             "fallback": False,
             #"conf": 0.5,
             #"tag": "reu_cnn_channels"
         },
         {
-            "grid_file": "mine_50x50.txt", "arch": None, "reward_fn": get_reward_d, 
-            "is_att": False,
+            "grid_file": "mine_50x50.txt", "arch": "attn", "reward_fn": get_reward_d, 
+            "is_att": True,
             "fallback": False,
             #"conf": 0.5,
             #"tag": "reu_cnn_channels"
