@@ -203,7 +203,15 @@ def train_all_models(timesteps: int = 1_000_000):
             
     models_to_train = [
         {
-            "grid_file": "mine_20x20.txt", "arch": None, "reward_fn": get_reward_d, 
+            "grid_file": "mine_50x50.txt", "arch": None, "reward_fn": get_reward_d, 
+            "is_att": False,
+            "is_cnn": True,
+            "fallback": False,
+            #"conf": 0.5,
+            "tag": "cnn"
+        },
+                {
+            "grid_file": "mine_50X50.txt", "arch": None, "reward_fn": get_reward_d, 
             "is_att": True,
             "is_cnn": True,
             "fallback": False,
