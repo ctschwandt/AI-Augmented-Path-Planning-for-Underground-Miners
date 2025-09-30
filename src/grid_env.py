@@ -204,6 +204,7 @@ class GridWorldEnv(Env):
                  n_sensors=None, reset_kwargs={},
                  is_cnn=False, battery_truncation=False,
                  n_miners=12,
+                 miner_move_interval: int = 1000,
                  ):
         super(GridWorldEnv, self).__init__()
 
@@ -242,6 +243,8 @@ class GridWorldEnv(Env):
         self.OBSTACLE_VALS = (OBSTACLE, SENSOR, BASE_STATION)
         self.n_miners = n_miners
         self.reward_fn = reward_fn
+        self.miner_move_interval = miner_move_interval
+        self._last_miner_move_step = -1 
 
         # d*lite pathplanning assitance
         self.pathfinder = None
@@ -302,7 +305,7 @@ class GridWorldEnv(Env):
             self.observation_space = Box(
             low=0.0,
             high=1.0,
-            shape=(5, self.n_rows, self.n_cols),
+            shape=(6, self.n_rows, self.n_cols),
             dtype=np.float32
             )
             
@@ -503,6 +506,10 @@ class GridWorldEnv(Env):
             for r, c in self.goal_positions:
                 obs[4, r, c] = 1.0
 
+            # Channel 5: miners
+            for (rr, cc) in self.miners:
+                obs[5, rr, cc] = 1.0
+
             return obs
         else:
             # Flat vector
@@ -560,6 +567,7 @@ class GridWorldEnv(Env):
         self.total_reward = 0
         self.obstacle_hits = 0
         self.episode_revisits = 0
+        self._last_miner_move_step = -1
         self.battery_levels_during_episode = []
 
         # place agent
@@ -690,7 +698,17 @@ class GridWorldEnv(Env):
             self.current_battery_level = 0.0
 
     def _move_miners_and_update_sensors(self):
-        self.move_miners_randomly()
+        """
+        Move miners only once every `miner_move_interval` steps,
+        but update sensor drain from miner positions every step.
+        """
+        # Move miners at interval ticks (e.g., 1000, 2000, ...)
+        if self.miner_move_interval > 0:
+            if self.episode_steps > 0 and (self.episode_steps % self.miner_move_interval == 0):
+                self._move_miners_once()
+                self._last_miner_move_step = self.episode_steps
+
+        # Apply miner-induced battery drain every step (even if miners didn't move)
         for miner_pos in self.miners:
             closest_sensor = self._get_closest_sensor(miner_pos)
             if closest_sensor:
@@ -700,6 +718,7 @@ class GridWorldEnv(Env):
                     miner=miner_pos,
                     base_stations=self.base_station_positions
                 )
+
 
     def _build_info_dict(self, terminated, truncated, reward, subrewards):
         info = {
@@ -905,3 +924,16 @@ class GridWorldEnv(Env):
         cost = self.pathfinder.g.get(position_xy, float('inf'))
         return cost
     
+    def _move_miners_once(self):
+        """Move each miner by at most one cell in a random 4-connected direction."""
+        directions = [(-1,0), (1,0), (0,-1), (0,1)]
+        new_positions = []
+        for (r, c) in self.miners:
+            dr, dc = random.choice(directions)
+            nr, nc = r + dr, c + dc
+            # stay put if move is out of bounds or blocked
+            if self.in_bounds((nr, nc)) and self.can_move_to((nr, nc)):
+                new_positions.append((nr, nc))
+            else:
+                new_positions.append((r, c))
+        self.miners = new_positions

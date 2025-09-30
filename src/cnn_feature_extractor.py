@@ -195,24 +195,36 @@ def build_default_cnn(in_channels, grid_file):
     elif grid_file and "50x50" in grid_file:
 
         return nn.Sequential(
-            nn.Conv2d(in_channels, 32, kernel_size=3, stride=2, padding=1),   # (32, 25, 25)
+            # in_channels (expected 6 now) -> 32
+            nn.Conv2d(in_channels, 32, kernel_size=3, stride=2, padding=1),  # -> 25x25
             nn.BatchNorm2d(32),
-            nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),  # (64, 13, 13)
+            nn.ReLU(inplace=True),
+
+            # 32 -> 64
+            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),           # -> 13x13
             nn.BatchNorm2d(64),
-            nn.ReLU(),
-            nn.Dropout2d(0.1),
-            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1), # (128, 7, 7)
+            nn.ReLU(inplace=True),
+            nn.Dropout2d(p=0.05),
+
+            # 64 -> 128
+            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),          # -> 7x7
             nn.BatchNorm2d(128),
-            nn.ReLU(),
-            nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1), # (256, 4, 4)
+            nn.ReLU(inplace=True),
+
+            # 128 -> 192
+            nn.Conv2d(128, 192, kernel_size=3, stride=2, padding=1),         # -> 4x4
+            nn.BatchNorm2d(192),
+            nn.ReLU(inplace=True),
+            nn.Dropout2d(p=0.10),
+
+            # 192 -> 256
+            nn.Conv2d(192, 256, kernel_size=3, stride=2, padding=1),         # -> 2x2
             nn.BatchNorm2d(256),
-            nn.ReLU(),
-            nn.Dropout2d(0.1),
-            nn.Conv2d(256, 256, kernel_size=3, stride=2, padding=1), # (256, 2, 2)
-            nn.BatchNorm2d(256),
-            nn.ReLU(),
-            nn.AdaptiveAvgPool2d((1, 1))  # (256, 1, 1)
+            nn.ReLU(inplace=True),
+
+            # Fixed-length output
+            nn.AdaptiveAvgPool2d((1, 1)),                                    # -> 1x1
+            nn.Flatten()                                                     # -> (B, 256)
         )
     elif grid_file and "20x20" in grid_file:
 
