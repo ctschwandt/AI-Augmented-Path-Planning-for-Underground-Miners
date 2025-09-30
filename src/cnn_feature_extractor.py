@@ -192,7 +192,7 @@ def build_default_cnn(in_channels, grid_file):
             nn.AdaptiveAvgPool2d((1, 1)),  # (256, 1, 1)
             nn.Flatten()
             )
-    elif grid_file and "50x50" in grid_file:
+    elif grid_file and "50x50" in grid_file: #c6: new channel
 
         return nn.Sequential(
             # in_channels (expected 6 now) -> 32

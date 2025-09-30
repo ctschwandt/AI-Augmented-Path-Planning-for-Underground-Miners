@@ -206,10 +206,10 @@ def train_all_models(timesteps: int = 1_000_000):
         {
             "grid_file": "mine_50X50.txt", "arch": None, "reward_fn": get_reward_d, 
             "is_att": False,
-            "is_cnn": False,
+            "is_cnn": True,
             "fallback": False,
             #"conf": 0.5,
-            "tag": "without_cnn_or_attention"
+            "tag": "with_cnn_c6"
         }
     ]
 
