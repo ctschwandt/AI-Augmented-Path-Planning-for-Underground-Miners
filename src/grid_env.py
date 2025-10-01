@@ -485,7 +485,7 @@ class GridWorldEnv(Env):
     def get_observation(self):
         if self.is_cnn:
             # 5 channels      
-            obs = np.zeros((5, self.n_rows, self.n_cols), dtype=np.float32)
+            obs = np.zeros((6, self.n_rows, self.n_cols), dtype=np.float32)
 
             # Channel 0: agent
             r, c = self.agent_pos
@@ -498,9 +498,10 @@ class GridWorldEnv(Env):
                         obs[1, r, c] = 1.0
 
             # Channel 2: sensor presence, Channel 3: sensor battery
-            for (r, c), battery in self.sensor_batteries.items():
-                obs[2, r, c] = 1.0
-                obs[3, r, c] = battery / 100.0  # normalized battery
+            obs[3, :, :] = -1.0  # default to -1 everywhere
+            for (rr, cc), battery in self.sensor_batteries.items():
+                obs[2, rr, cc] = 1.0
+                obs[3, rr, cc] = battery / 100.0
 
             # Channel 4: goal
             for r, c in self.goal_positions:

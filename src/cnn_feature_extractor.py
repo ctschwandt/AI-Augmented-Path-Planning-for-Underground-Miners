@@ -229,20 +229,31 @@ def build_default_cnn(in_channels, grid_file):
     elif grid_file and "20x20" in grid_file:
 
         return nn.Sequential(
-            nn.Conv2d(in_channels, 32, kernel_size=3, stride=2, padding=1),    # (32, 10, 10)
-            nn.BatchNorm2d(32),
-            nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),   # (64, 5, 5)
-            nn.BatchNorm2d(64),
-            nn.ReLU(),
-            nn.Dropout2d(0.1),
-            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),  # (128, 3, 3)
-            nn.BatchNorm2d(128),
-            nn.ReLU(),
-            nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1), # (256, 2, 2)
-            nn.BatchNorm2d(256),
-            nn.ReLU(),
-            nn.AdaptiveAvgPool2d((1, 1))  # (256, 1, 1)
+        # Preserve local detail before first downsample
+        nn.Conv2d(in_channels, 32, kernel_size=3, stride=1, padding=1),   # 32 x 20 x 20
+        nn.BatchNorm2d(32),
+        nn.ReLU(inplace=True),
+
+        # ↓ /2 spatial, ×2 channels  => ~½ total values
+        nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),            # 64 x 10 x 10
+        nn.BatchNorm2d(64),
+        nn.ReLU(inplace=True),
+        nn.Dropout2d(p=0.05),
+
+        # ↓ /2 spatial, ×2 channels
+        nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),           # 128 x 5 x 5
+        nn.BatchNorm2d(128),
+        nn.ReLU(inplace=True),
+
+        # ↓ /2 spatial (5→3 with k=3,s=2,p=1), ×2 channels
+        nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1),          # 256 x 3 x 3
+        nn.BatchNorm2d(256),
+        nn.ReLU(inplace=True),
+        nn.Dropout2d(p=0.10),
+
+        # Fixed-length embedding regardless of input
+        nn.AdaptiveAvgPool2d((1, 1)),                                     # 256 x 1 x 1
+        nn.Flatten()                                                      # -> (B, 256)
         )
     else:
         return nn.Sequential(
