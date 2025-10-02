@@ -192,45 +192,68 @@ def build_default_cnn(in_channels, grid_file):
             nn.AdaptiveAvgPool2d((1, 1)),  # (256, 1, 1)
             nn.Flatten()
             )
-    elif grid_file and "50x50" in grid_file:
+    elif grid_file and "50x50" in grid_file: #c6: new channel
 
         return nn.Sequential(
-            nn.Conv2d(in_channels, 32, kernel_size=3, stride=2, padding=1),   # (32, 25, 25)
+            # in_channels (expected 6 now) -> 32
+            nn.Conv2d(in_channels, 32, kernel_size=3, stride=2, padding=1),  # -> 25x25
             nn.BatchNorm2d(32),
-            nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),  # (64, 13, 13)
+            nn.ReLU(inplace=True),
+
+            # 32 -> 64
+            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),           # -> 13x13
             nn.BatchNorm2d(64),
-            nn.ReLU(),
-            nn.Dropout2d(0.1),
-            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1), # (128, 7, 7)
+            nn.ReLU(inplace=True),
+            nn.Dropout2d(p=0.05),
+
+            # 64 -> 128
+            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),          # -> 7x7
             nn.BatchNorm2d(128),
-            nn.ReLU(),
-            nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1), # (256, 4, 4)
+            nn.ReLU(inplace=True),
+
+            # 128 -> 192
+            nn.Conv2d(128, 192, kernel_size=3, stride=2, padding=1),         # -> 4x4
+            nn.BatchNorm2d(192),
+            nn.ReLU(inplace=True),
+            nn.Dropout2d(p=0.10),
+
+            # 192 -> 256
+            nn.Conv2d(192, 256, kernel_size=3, stride=2, padding=1),         # -> 2x2
             nn.BatchNorm2d(256),
-            nn.ReLU(),
-            nn.Dropout2d(0.1),
-            nn.Conv2d(256, 256, kernel_size=3, stride=2, padding=1), # (256, 2, 2)
-            nn.BatchNorm2d(256),
-            nn.ReLU(),
-            nn.AdaptiveAvgPool2d((1, 1))  # (256, 1, 1)
+            nn.ReLU(inplace=True),
+
+            # Fixed-length output
+            nn.AdaptiveAvgPool2d((1, 1)),                                    # -> 1x1
+            nn.Flatten()                                                     # -> (B, 256)
         )
     elif grid_file and "20x20" in grid_file:
 
         return nn.Sequential(
-            nn.Conv2d(in_channels, 32, kernel_size=3, stride=2, padding=1),    # (32, 10, 10)
-            nn.BatchNorm2d(32),
-            nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),   # (64, 5, 5)
-            nn.BatchNorm2d(64),
-            nn.ReLU(),
-            nn.Dropout2d(0.1),
-            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),  # (128, 3, 3)
-            nn.BatchNorm2d(128),
-            nn.ReLU(),
-            nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1), # (256, 2, 2)
-            nn.BatchNorm2d(256),
-            nn.ReLU(),
-            nn.AdaptiveAvgPool2d((1, 1))  # (256, 1, 1)
+        # Preserve local detail before first downsample
+        nn.Conv2d(in_channels, 32, kernel_size=3, stride=1, padding=1),   # 32 x 20 x 20
+        nn.BatchNorm2d(32),
+        nn.ReLU(inplace=True),
+
+        # ↓ /2 spatial, ×2 channels  => ~½ total values
+        nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),            # 64 x 10 x 10
+        nn.BatchNorm2d(64),
+        nn.ReLU(inplace=True),
+        nn.Dropout2d(p=0.05),
+
+        # ↓ /2 spatial, ×2 channels
+        nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),           # 128 x 5 x 5
+        nn.BatchNorm2d(128),
+        nn.ReLU(inplace=True),
+
+        # ↓ /2 spatial (5→3 with k=3,s=2,p=1), ×2 channels
+        nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1),          # 256 x 3 x 3
+        nn.BatchNorm2d(256),
+        nn.ReLU(inplace=True),
+        nn.Dropout2d(p=0.10),
+
+        # Fixed-length embedding regardless of input
+        nn.AdaptiveAvgPool2d((1, 1)),                                     # 256 x 1 x 1
+        nn.Flatten()                                                      # -> (B, 256)
         )
     else:
         return nn.Sequential(

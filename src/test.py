@@ -202,14 +202,15 @@ def train_all_models(timesteps: int = 1_000_000):
             config["model_name"] = model_name
             
     models_to_train = [
+        
         {
             "grid_file": "mine_20x20.txt", "arch": None, "reward_fn": get_reward_d, 
             "is_att": False,
-            "is_cnn": False,
+            "is_cnn": True,
             "fallback": False,
             #"conf": 0.5,
-            "tag": "trying_to_replicate_reu_results"
-        },
+            "tag": "no_cnn"
+        }
     ]
 
     attach_model_names(models_to_train)
