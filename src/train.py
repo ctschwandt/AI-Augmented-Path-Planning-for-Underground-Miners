@@ -374,7 +374,12 @@ def load_model(experiment_folder: str,
     inferred_grid = best_matching_grid(experiment_name, FIXED_GRID_DIR)
     
     is_att = "att" in name_lower
-    is_cnn = "cnn" in name_lower and not is_att
+    # Only treat the experiment as CNN-based if we explicitly requested it.
+    # Names like "no_cnn" were being incorrectly detected because they still
+    # contain the substring "cnn", which led to a mismatched observation
+    # space when loading vector-based models.
+    has_no_cnn_flag = "no_cnn" in name_lower
+    is_cnn = ("cnn" in name_lower) and not has_no_cnn_flag and not is_att
     
     use_fallback = "fb_" in name_lower
     confidence_threshold = 0.75 # Default
