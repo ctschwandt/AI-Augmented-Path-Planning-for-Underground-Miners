@@ -255,7 +255,7 @@ class GridWorldEnv(Env):
         self.battery_levels_during_episode = []
             
         # observation/action spaces
-        self._use_observation_profile(obs_profile)
+        self.use_observation_profile(obs_profile)
         self._init_spaces()
 
         '''
@@ -993,7 +993,6 @@ class GridWorldEnv(Env):
         bats = self._batteries_vec()
         miners = self._miners_vec()
         return np.concatenate([blocked, pos, dist, bats, miners], axis=0)
-
 
     # cnn profile
     def _init_obs_cnn6(self):

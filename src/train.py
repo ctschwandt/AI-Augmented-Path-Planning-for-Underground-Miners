@@ -35,26 +35,36 @@ def train_PPO_model(reward_fn,
                     features_dim: int = 128,
                     battery_truncation=False,
                     is_att: bool = False,
-                    num_frames: int = 8
-                    ):
+                    num_frames: int = 8,
+                    # NEW:
+                    obs_profile: str = "with_last_without_miners"):
+    """
+    Train PPO with a chosen observation profile.
+    Valid profiles: "with_last_without_miners", "with_last_with_miners",
+                    "without_last_without_miners", "without_last_with_miners",
+                    "cnn6"
+    """
+    # guard against mismatches (flat obs with CNN extractor)
+    if arch is not None and obs_profile != "cnn6" and not is_att:
+        raise ValueError("CNN backbone requested (arch set) but obs_profile is not 'cnn6'.")
 
-    # --- Step 1: Create the foundational environment ---
     base_env = GridWorldEnv(
         reward_fn=reward_fn,
         grid_file=grid_file,
-        is_cnn=(arch is not None or is_att),
+        is_cnn=(obs_profile == "cnn6" or is_att or arch is not None),
         reset_kwargs=reset_kwargs,
-        battery_truncation=battery_truncation
+        battery_truncation=battery_truncation,
+        obs_profile=obs_profile
     )
 
-    # --- Step 2: Apply observation wrappers ---
+    # Wrapping
     obs_wrapped_env = base_env
-    if (arch is not None) or is_att:
+    if obs_profile == "cnn6" or is_att or arch is not None:
         obs_wrapped_env = CustomGridCNNWrapper(obs_wrapped_env)
     if is_att:
         obs_wrapped_env = TimeStackObservation(obs_wrapped_env, num_frames=num_frames)
 
-    # --- Step 3: Define the policy and model kwargs ---
+    # Policy/extractor
     policy_kwargs = None
     policy_name = "MlpPolicy"
 
@@ -69,21 +79,22 @@ def train_PPO_model(reward_fn,
             },
             "net_arch": dict(pi=[64, 64], vf=[64, 64])
         }
-    elif arch is not None:
-        print(f"INFO: Using GridCNNExtractor (backbone: {arch}) for 3D image observations.")
+    elif obs_profile == "cnn6" or arch is not None:
+        backbone = (arch or "resnet18").lower()
+        print(f"INFO: Using GridCNNExtractor (backbone: {backbone}) for 3D image observations.")
         policy_kwargs = {
             "features_extractor_class": GridCNNExtractor,
             "features_extractor_kwargs": {
                 "features_dim": features_dim,
                 "grid_file": grid_file,
-                "backbone": arch.lower()
+                "backbone": backbone
             },
             "net_arch": dict(pi=[64, 64], vf=[64, 64])
         }
     else:
         print("INFO: Using default MLP for flat vector observations.")
 
-    # --- Step 4: Choose environment and model based on hybrid flag ---
+    # Model
     if use_hybrid_control:
         print(f"--- Applying D* Lite Fallback Wrapper (OUTERMOST) ---")
         final_env = DStarFallbackWrapper(obs_wrapped_env, None, confidence_threshold)
@@ -104,7 +115,7 @@ def train_PPO_model(reward_fn,
             verbose=1,
             policy_kwargs=policy_kwargs
         )
-        final_env.set_model(model)  # So the wrapper has access to the model for confidence
+        final_env.set_model(model)
     else:
         vec_env = DummyVecEnv([lambda: obs_wrapped_env])
         model = PPO(
@@ -124,18 +135,15 @@ def train_PPO_model(reward_fn,
             policy_kwargs=policy_kwargs
         )
 
-    # --- Step 5: Train ---
     print("Starting model training...")
     callback = CustomTensorboardCallback(verbose=1)
     model.learn(total_timesteps=timesteps, callback=callback)
 
-    # --- Step 6: Save ---
     log_dir = callback.logger.dir
     model_save_path = os.path.join(log_dir, "model.zip")
     model.save(model_save_path)
     print(f"\nPPO training complete. Logs and model stored to {log_dir}")
 
-    # --- Step 7: Metrics ---
     num_points = 50
     plots = plot_all_metrics(log_dir=log_dir, num_points=num_points)
     print("\n=== Metrics Plots Generated ===")
@@ -357,68 +365,66 @@ def evaluate_model(env, model, n_eval_episodes=20, sleep_time=0.1, render: bool 
     print(f"Timesteps Where Battery Level <= 10: {leq_10s}/{total_steps} ({leq_10s/total_steps * 100:.4f}%)")
     print(f"Timesteps Where Battery Level <= 0: {leq_0s}/{total_steps} ({leq_0s/total_steps * 100:.4f}%)")
 
-def load_model(experiment_folder: str, 
+def load_model(experiment_folder: str,
                experiment_name: str,
-               reset_kwargs: dict = {}):
+               reset_kwargs: dict = {},
+               obs_profile: str = None):
     """
     Loads a PPO model and reconstructs its full environment stack.
-    It uses the provided 'experiment_name' to infer the configuration.
+    If obs_profile is provided, it overrides profile inferred from the name.
     """
     model_path = os.path.join(experiment_folder, "model.zip")
     if not os.path.isfile(model_path):
         raise FileNotFoundError(f"Model not found at {model_path}")
 
-    # --- 1. Parse the full configuration from the PROVIDED experiment_name ---
     name_lower = experiment_name.lower()
-    
     inferred_grid = best_matching_grid(experiment_name, FIXED_GRID_DIR)
-    
+
     is_att = "att" in name_lower
-    is_cnn = "cnn" in name_lower and not is_att
-    
+    is_cnn = ("cnn" in name_lower) and (not is_att)
+
     use_fallback = "fb_" in name_lower
-    confidence_threshold = 0.75 # Default
+    confidence_threshold = 0.75
     if use_fallback:
         match = re.search(r'fb_(\d\.\d+)', name_lower)
         if match:
             confidence_threshold = float(match.group(1))
 
+    # pick reward by name
     reward_fn = infer_reward_fn(experiment_name)
-    
+
+    # infer obs_profile if not specified
+    if obs_profile is None:
+        # simple heuristic: attention => cnn6 (time-stacked later), cnn => cnn6, else flat default
+        obs_profile = "cnn6" if (is_att or is_cnn) else "with_last_without_miners"
+
     print(f"\n--- Loading Model: {experiment_name} from folder {os.path.basename(experiment_folder)} ---")
     print(f"  Grid: {inferred_grid}, Reward Fn: {reward_fn.__name__}")
     print(f"  CNN: {is_cnn}, Attention: {is_att}, Fallback: {use_fallback} (conf={confidence_threshold})")
-    
-    # --- 2. Load the model weights FIRST to break the circular dependency ---
-    if use_fallback:
-        print("Loading PPOFallback model (with fallback support).")
-        model_class = PPOFallback
-    else:
-        print("Loading standard PPO model.")
-        model_class = PPO
+    print(f"  Obs Profile: {obs_profile}")
 
+    model_class = PPOFallback if use_fallback else PPO
     model = model_class.load(model_path)
-        
-    # --- 3. Build the full environment stack based on the parsed flags ---
-    num_frames = 8 # Assume this is a constant for your attention models
 
-    base_env = GridWorldEnv(reward_fn=reward_fn, grid_file=inferred_grid, is_cnn=(is_cnn or is_att), reset_kwargs=reset_kwargs)
+    num_frames = 8
+
+    base_env = GridWorldEnv(
+        reward_fn=reward_fn,
+        grid_file=inferred_grid,
+        is_cnn=(obs_profile == "cnn6" or is_att),
+        reset_kwargs=reset_kwargs,
+        obs_profile=obs_profile
+    )
 
     obs_wrapped_env = base_env
-    if is_cnn or is_att:
+    if obs_profile == "cnn6" or is_att:
         obs_wrapped_env = CustomGridCNNWrapper(obs_wrapped_env)
     if is_att:
         obs_wrapped_env = TimeStackObservation(obs_wrapped_env, num_frames=num_frames)
-    
-    if use_fallback:
-        final_env = DStarFallbackWrapper(obs_wrapped_env, model, confidence_threshold)
-    else:
-        final_env = obs_wrapped_env
 
-    # --- 4. Connect the model to the final, fully-wrapped environment ---
+    final_env = DStarFallbackWrapper(obs_wrapped_env, model, confidence_threshold) if use_fallback else obs_wrapped_env
     vec_env = DummyVecEnv([lambda: final_env])
     model.set_env(vec_env)
-    
     return model
 
 def load_model_and_evaluate(model_folder: str, grid_file: str, is_cnn: bool = False, reset_kwargs: dict = {},

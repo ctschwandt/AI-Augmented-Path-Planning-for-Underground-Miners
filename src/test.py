@@ -172,8 +172,7 @@ def evaluate_all_models(base_dir=SAVE_DIR, n_eval_episodes=10, render=True, verb
 
 def train_all_models(timesteps: int = 1_000_000):
     """
-    Trains PPO models with support for the DStarFallbackWrapper,
-    using concise configuration keys.
+    Trains PPO models (optionally with DStarFallbackWrapper) using concise config keys.
     """
     def attach_model_names(model_configs):
         for config in model_configs:
@@ -181,7 +180,7 @@ def train_all_models(timesteps: int = 1_000_000):
             reward_fn_name = config.get("reward_fn").__name__
             reward_name = reward_fn_name.replace("get_", "")
             arch = config.get("arch", "mlp")
-            
+
             tags = []
             if config.get("is_att", False):
                 tags.append("att")
@@ -190,27 +189,41 @@ def train_all_models(timesteps: int = 1_000_000):
 
             if config.get("fallback", False):
                 conf_thresh = config.get('conf', 'default')
-                tags.append(f"fb_{conf_thresh}") # 'fb' for fallback
-            
+                tags.append(f"fb_{conf_thresh}")
+
             if config.get("tag"):
                 tags.append(config["tag"])
+
+            # include obs_profile in name for clarity
+            prof = config.get("obs_profile", "with_last_without_miners")
+            tags.append(prof)
 
             model_name = f"{grid_name}__{reward_name}__{arch}"
             if tags:
                 model_name += f"__{'_'.join(tags)}"
 
             config["model_name"] = model_name
-            
+
     models_to_train = [
-        
         {
-            "grid_file": "mine_50x50.txt", "arch": None, "reward_fn": get_reward_d, 
+            "grid_file": "mine_50x50.txt",
+            "arch": None,
+            "reward_fn": get_reward_d,
             "is_att": False,
-            "is_cnn": True,
             "fallback": False,
-            #"conf": 0.5,
-            "tag": "no_cnn"
-        }
+            "tag": "flat",
+            # NEW: choose any of:
+            # "with_last_without_miners", "with_last_with_miners",
+            # "without_last_without_miners", "without_last_with_miners",
+            # "cnn6"
+            "obs_profile": "with_last_without_miners",
+        },
+        # example CNN6 run:
+        # {
+        #   "grid_file": "mine_50x50.txt", "arch": "resnet18",
+        #   "reward_fn": get_reward_d, "is_att": False,
+        #   "fallback": False, "obs_profile": "cnn6"
+        # },
     ]
 
     attach_model_names(models_to_train)
@@ -229,16 +242,16 @@ def train_all_models(timesteps: int = 1_000_000):
             grid_file=config["grid_file"],
             timesteps=timesteps,
             folder_name=config["model_name"],
-            # Pass new hybrid control parameters using the short names
             use_hybrid_control=config.get("fallback", False),
             confidence_threshold=config.get("conf", 0.75),
-            # Pass other existing parameters
             reset_kwargs={"battery_overrides": battery_overrides} if battery_overrides else {},
             arch=config.get("arch"),
             is_att=config.get("is_att", False),
-            battery_truncation=True
+            battery_truncation=True,
+            # NEW — just pass it through:
+            obs_profile=config.get("obs_profile", "with_last_without_miners"),
         )
-    
+
         print(f"===== Finished training {config['model_name']} =====")
 
 def train_and_render_junk_model(grid_file: str = "mine_20x20.txt", is_cnn: bool = False, n_eval_episodes: int = 3):
