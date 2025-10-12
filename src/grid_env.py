@@ -205,6 +205,7 @@ class GridWorldEnv(Env):
                  is_cnn=False, battery_truncation=False,
                  n_miners=12,
                  miner_move_interval: int = 1000,
+                 obs_profile: str = "with_last_without_miners",
                  ):
         super(GridWorldEnv, self).__init__()
 
@@ -254,6 +255,7 @@ class GridWorldEnv(Env):
         self.battery_levels_during_episode = []
             
         # observation/action spaces
+        self._use_observation_profile(obs_profile)
         self._init_spaces()
 
         '''
@@ -481,61 +483,6 @@ class GridWorldEnv(Env):
             return euclidean_distances(self.agent_pos, self.goal_positions, self.n_cols, self.n_rows)
         else:
             return euclidean_distances(self.agent_pos, self.goal_positions)
-
-    def get_observation(self):
-        if self.is_cnn:
-            # 5 channels      
-            obs = np.zeros((6, self.n_rows, self.n_cols), dtype=np.float32)
-
-            # Channel 0: agent
-            r, c = self.agent_pos
-            obs[0, r, c] = 1.0
-
-            # Channel 1: blocked (obstacle, base station, etc.)
-            for r in range(self.n_rows):
-                for c in range(self.n_cols):
-                    if self.static_grid[r, c] in (OBSTACLE, BASE_STATION):  # add others if needed
-                        obs[1, r, c] = 1.0
-
-            # Channel 2: sensor presence, Channel 3: sensor battery
-            obs[3, :, :] = -1.0  # default to -1 everywhere
-            for (rr, cc), battery in self.sensor_batteries.items():
-                obs[2, rr, cc] = 1.0
-                obs[3, rr, cc] = battery / 100.0
-
-            # Channel 4: goal
-            for r, c in self.goal_positions:
-                obs[4, r, c] = 1.0
-
-            # Channel 5: miners
-            for (rr, cc) in self.miners:
-                obs[5, rr, cc] = 1.0
-
-            return obs
-        else:
-            # Flat vector
-            r, c = self.agent_pos
-            neighbors = [
-            (r - 1, c), (r - 1, c + 1), (r, c + 1), (r + 1, c + 1),
-            (r + 1, c), (r + 1, c - 1), (r, c - 1), (r - 1, c - 1)
-            ]
-
-            def is_blocked(pos):
-                return 1.0 if not self.can_move_to(pos) else 0.0
-
-            blocked_flags = np.array([is_blocked(p) for p in neighbors], dtype=np.float32)
-            norm_pos = np.array([r / (self.n_rows - 1), c / (self.n_cols - 1)], dtype=np.float32)
-            last_action = self.last_action / 7.0 if self.last_action >= 0 else 0.0
-
-            dist_to_goal = self._compute_min_distance_to_goal()
-
-            battery_levels = np.array(
-                [self.sensor_batteries.get(pos, 0.0) / 100.0 for pos in self.sensor_batteries],
-            dtype=np.float32
-            )
-
-            return np.concatenate([blocked_flags, norm_pos, [last_action], [dist_to_goal], battery_levels])
-
 
     def reset(self, seed=None, options = None):
         """
@@ -938,3 +885,152 @@ class GridWorldEnv(Env):
             else:
                 new_positions.append((r, c))
         self.miners = new_positions
+
+    def use_observation_profile(self, profile: str):
+        """
+        Switch the observation space/layout. This binds get_observation to the profile's getter
+        and sets observation_space accordingly. Valid names:
+        - "with_last_without_miners"
+        - "with_last_with_miners"
+        - "without_last_without_miners"
+        - "without_last_with_miners"
+        - "cnn6"
+        """
+        profiles = {
+            "with_last_without_miners": (self._init_obs_with_last_without_miners,    self._obs_with_last_without_miners, False),
+            "with_last_with_miners": (self._init_obs_with_last_with_miners,       self._obs_with_last_with_miners, False),
+            "without_last_without_miners": (self._init_obs_without_last_without_miners, self._obs_without_last_without_miners, False),
+            "without_last_with_miners": (self._init_obs_without_last_with_miners,    self._obs_without_last_with_miners, False),
+        "cnn6": (self._init_obs_cnn6, self._obs_cnn6, True),
+        }
+        
+        if profile not in profiles:
+            raise ValueError(f"Unknown obs profile '{profile}'")
+        init_fn, get_fn, is_cnn = profiles[profile]
+
+        # set flag, init space, bind getter
+        self.is_cnn = is_cnn
+        init_fn()
+        self._obs_getter = get_fn
+
+    ##==============================================================
+    ## Observation profile inits and getters
+    ##==============================================================
+    def get_observation(self):
+        return self._obs_getter()
+
+    # helpers
+    def _blocked8(self, r, c):
+        nbrs = [(r-1,c), (r-1,c+1), (r, c+1), (r+1,c+1),
+                (r+1,c), (r+1,c-1), (r, c-1), (r-1,c-1)]
+        return np.array([1.0 if not self.can_move_to(p) else 0.0 for p in nbrs], dtype=np.float32)
+
+    def _batteries_vec(self):
+        return np.array([self.sensor_batteries.get(pos, 0.0)/100.0
+                         for pos in self.sensor_batteries], dtype=np.float32)
+
+    def _miners_vec(self):
+        K = int(self.n_miners)
+        out = np.zeros((2*K,), dtype=np.float32)
+        if not self.miners or K <= 0:
+            return out
+        nr = max(1, self.n_rows-1); nc = max(1, self.n_cols-1)
+        for i, (mr, mc) in enumerate(sorted(self.miners)[:K]):
+            out[2*i]   = mr / nr
+            out[2*i+1] = mc / nc
+        return out
+
+    # flat inits
+    def _init_obs_with_last_without_miners(self):
+        dim = 8 + 2 + 1 + 1 + self.n_sensors
+        self.observation_space = Box(low=0.0, high=1.0, shape=(dim,), dtype=np.float32)
+
+    def _init_obs_with_last_with_miners(self):
+        dim = 8 + 2 + 1 + 1 + self.n_sensors + 2*int(self.n_miners)
+        self.observation_space = Box(low=0.0, high=1.0, shape=(dim,), dtype=np.float32)
+
+    def _init_obs_without_last_without_miners(self):
+        dim = 8 + 2 + 1 + self.n_sensors
+        self.observation_space = Box(low=0.0, high=1.0, shape=(dim,), dtype=np.float32)
+
+    def _init_obs_without_last_with_miners(self):
+        dim = 8 + 2 + 1 + self.n_sensors + 2*int(self.n_miners)
+        self.observation_space = Box(low=0.0, high=1.0, shape=(dim,), dtype=np.float32)
+
+    # flat getters
+    def _obs_with_last_without_miners(self):
+        r, c = self.agent_pos
+        blocked = self._blocked8(r, c)
+        pos  = np.array([r/max(1,self.n_rows-1), c/max(1,self.n_cols-1)], dtype=np.float32)
+        la   = np.array([(self.last_action/7.0) if self.last_action >= 0 else 0.0], dtype=np.float32)
+        dist = np.array([self._compute_min_distance_to_goal()], dtype=np.float32)
+        bats = self._batteries_vec()
+        return np.concatenate([blocked, pos, la, dist, bats], axis=0)
+
+    def _obs_with_last_with_miners(self):
+        r, c = self.agent_pos
+        blocked = self._blocked8(r, c)
+        pos  = np.array([r/max(1,self.n_rows-1), c/max(1,self.n_cols-1)], dtype=np.float32)
+        la   = np.array([(self.last_action/7.0) if self.last_action >= 0 else 0.0], dtype=np.float32)
+        dist = np.array([self._compute_min_distance_to_goal()], dtype=np.float32)
+        bats = self._batteries_vec()
+        miners = self._miners_vec()
+        return np.concatenate([blocked, pos, la, dist, bats, miners], axis=0)
+
+    def _obs_without_last_without_miners(self):
+        r, c = self.agent_pos
+        blocked = self._blocked8(r, c)
+        pos  = np.array([r/max(1,self.n_rows-1), c/max(1,self.n_cols-1)], dtype=np.float32)
+        dist = np.array([self._compute_min_distance_to_goal()], dtype=np.float32)
+        bats = self._batteries_vec()
+        return np.concatenate([blocked, pos, dist, bats], axis=0)
+
+    def _obs_without_last_with_miners(self):
+        r, c = self.agent_pos
+        blocked = self._blocked8(r, c)
+        pos  = np.array([r/max(1,self.n_rows-1), c/max(1,self.n_cols-1)], dtype=np.float32)
+        dist = np.array([self._compute_min_distance_to_goal()], dtype=np.float32)
+        bats = self._batteries_vec()
+        miners = self._miners_vec()
+        return np.concatenate([blocked, pos, dist, bats, miners], axis=0)
+
+
+    # cnn profile
+    def _init_obs_cnn6(self):
+        # 6 channels
+        self.observation_space = Box(low=0.0, high=1.0,
+                                 shape=(6, self.n_rows, self.n_cols),
+                                 dtype=np.float32)
+
+    def _obs_cnn6(self):
+        obs = np.zeros((6, self.n_rows, self.n_cols), dtype=np.float32)
+
+        # ch0: agent
+        ar, ac = self.agent_pos
+        obs[0, ar, ac] = 1.0
+
+        # ch1: blocked (obstacles, base stations)
+        for rr in range(self.n_rows):
+            for cc in range(self.n_cols):
+                if self.static_grid[rr, cc] in (OBSTACLE, BASE_STATION):
+                    obs[1, rr, cc] = 1.0
+
+        # ch2: sensor presence, ch3: sensor battery
+        obs[3, :, :] = -1.0
+        for (sr, sc), battery in self.sensor_batteries.items():
+            obs[2, sr, sc] = 1.0
+            obs[3, sr, sc] = battery / 100.0
+
+        # ch4: goals
+        for gr, gc in self.goal_positions:
+            obs[4, gr, gc] = 1.0
+
+        # ch5: miners
+        for mr, mc in self.miners:
+            obs[5, mr, mc] = 1.0
+
+        return obs
+
+
+
+
