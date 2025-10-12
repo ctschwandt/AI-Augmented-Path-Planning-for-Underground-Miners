@@ -1,12 +1,13 @@
 # grid_env.py
 import gym
 from gym import Env
-from gym.spaces import Discrete, Box, Dict
+from gym.spaces import Discrete
 import numpy as np
-import random 
+import random
 import os
 import csv
 import pygame
+from typing import Optional
 import src.grid_gen as grid_gen
 from src.constants import *
 from src.utils import *
@@ -15,6 +16,7 @@ from src.sensor import transmission_energy, reception_energy, compute_sensor_ene
 from stable_baselines3.common.callbacks import BaseCallback
 import datetime
 from src.path_planning import *
+from src.observations import ObservationBuilder, get_observation_builder
 
 ##==============================================================
 ## Logs custom metrics stored in `info` dict to TensorBoard
@@ -202,7 +204,10 @@ class GridWorldEnv(Env):
                  grid_width: int = None,
                  obstacle_percentage=None,
                  n_sensors=None, reset_kwargs={},
-                 is_cnn=False, battery_truncation=False,
+                 is_cnn: bool = False,
+                 observation_builder: Optional[ObservationBuilder] = None,
+                 observation_type: Optional[str] = None,
+                 battery_truncation=False,
                  n_miners=12,
                  miner_move_interval: int = 1000,
                  ):
@@ -216,7 +221,18 @@ class GridWorldEnv(Env):
                                n_sensors)
         self.max_steps = 2000
         self.reset_kwargs = reset_kwargs
-        self.is_cnn = is_cnn
+        if observation_builder is not None and observation_type is not None:
+            raise ValueError("Provide either observation_builder or observation_type, not both.")
+
+        if observation_type is not None:
+            observation_builder = get_observation_builder(observation_type)
+
+        if observation_builder is None:
+            default_type = "cnn" if is_cnn else "flat"
+            observation_builder = get_observation_builder(default_type)
+
+        self.observation_builder = observation_builder
+        self.is_cnn = observation_builder.is_image_based
         self.battery_truncation = battery_truncation
         
         # pygame rendering
@@ -293,38 +309,7 @@ class GridWorldEnv(Env):
     def _init_spaces(self):
         # 4 cardinals dirs + 4 diagonals
         self.action_space = Discrete(8)
-        if self.is_cnn:
-            '''
-            self.observation_space = Box(
-            low=0.0,
-            high=5.0,
-            shape=(2, self.n_rows, self.n_cols),
-            dtype=np.float32
-            )
-            '''
-            self.observation_space = Box(
-            low=0.0,
-            high=1.0,
-            shape=(6, self.n_rows, self.n_cols),
-            dtype=np.float32
-            )
-            
-        else:
-            
-            # [0, 7] - space around agent
-            # [8, 9] - agent r, c
-            # [10] - last action
-            # [11] - distance to closest goal
-            # [12, n_sensors-1] - battery levels of all sensors
-            obs_dim = 8 + 2 + 1 + 1 + self.n_sensors
-
-            # cnn observation space is set in wrapper
-            self.observation_space = Box(
-                low=0.0,
-                high=1.0,
-                shape=(obs_dim, ),
-                dtype=np.float32
-            )
+        self.observation_space = self.observation_builder.get_observation_space(self)
             
     def _get_goal_exclusion_zone(self):
         # goal is not placed in sensor radar range???
@@ -483,58 +468,7 @@ class GridWorldEnv(Env):
             return euclidean_distances(self.agent_pos, self.goal_positions)
 
     def get_observation(self):
-        if self.is_cnn:
-            # 5 channels      
-            obs = np.zeros((6, self.n_rows, self.n_cols), dtype=np.float32)
-
-            # Channel 0: agent
-            r, c = self.agent_pos
-            obs[0, r, c] = 1.0
-
-            # Channel 1: blocked (obstacle, base station, etc.)
-            for r in range(self.n_rows):
-                for c in range(self.n_cols):
-                    if self.static_grid[r, c] in (OBSTACLE, BASE_STATION):  # add others if needed
-                        obs[1, r, c] = 1.0
-
-            # Channel 2: sensor presence, Channel 3: sensor battery
-            obs[3, :, :] = -1.0  # default to -1 everywhere
-            for (rr, cc), battery in self.sensor_batteries.items():
-                obs[2, rr, cc] = 1.0
-                obs[3, rr, cc] = battery / 100.0
-
-            # Channel 4: goal
-            for r, c in self.goal_positions:
-                obs[4, r, c] = 1.0
-
-            # Channel 5: miners
-            for (rr, cc) in self.miners:
-                obs[5, rr, cc] = 1.0
-
-            return obs
-        else:
-            # Flat vector
-            r, c = self.agent_pos
-            neighbors = [
-            (r - 1, c), (r - 1, c + 1), (r, c + 1), (r + 1, c + 1),
-            (r + 1, c), (r + 1, c - 1), (r, c - 1), (r - 1, c - 1)
-            ]
-
-            def is_blocked(pos):
-                return 1.0 if not self.can_move_to(pos) else 0.0
-
-            blocked_flags = np.array([is_blocked(p) for p in neighbors], dtype=np.float32)
-            norm_pos = np.array([r / (self.n_rows - 1), c / (self.n_cols - 1)], dtype=np.float32)
-            last_action = self.last_action / 7.0 if self.last_action >= 0 else 0.0
-
-            dist_to_goal = self._compute_min_distance_to_goal()
-
-            battery_levels = np.array(
-                [self.sensor_batteries.get(pos, 0.0) / 100.0 for pos in self.sensor_batteries],
-            dtype=np.float32
-            )
-
-            return np.concatenate([blocked_flags, norm_pos, [last_action], [dist_to_goal], battery_levels])
+        return self.observation_builder.get_observation(self)
 
 
     def reset(self, seed=None, options = None):
