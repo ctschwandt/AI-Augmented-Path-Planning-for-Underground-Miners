@@ -216,8 +216,21 @@ def train_all_models(timesteps: int = 1_000_000):
             # "with_last_without_miners", "with_last_with_miners",
             # "without_last_without_miners", "without_last_with_miners",
             # "cnn6"
-            "obs_profile": "with_last_without_miners",
+            "obs_profile": "with_last_with_miners",
         },
+        {
+            "grid_file": "mine_50x50.txt",
+            "arch": None,
+            "reward_fn": get_reward_d,
+            "is_att": False,
+            "fallback": False,
+            "tag": "flat",
+            # NEW: choose any of:
+            # "with_last_without_miners", "with_last_with_miners",
+            # "without_last_without_miners", "without_last_with_miners",
+            # "cnn6"
+            "obs_profile": "cnn7",
+        }
         # example CNN6 run:
         # {
         #   "grid_file": "mine_50x50.txt", "arch": "resnet18",

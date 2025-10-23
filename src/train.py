@@ -79,8 +79,8 @@ def train_PPO_model(reward_fn,
             },
             "net_arch": dict(pi=[64, 64], vf=[64, 64])
         }
-    elif obs_profile == "cnn6" or arch is not None:
-        backbone = (arch or "resnet18").lower()
+    elif obs_profile == "cnn6" or obs_profile == "cnn7" or arch is not None:
+        backbone = (arch or "seq").lower()
         print(f"INFO: Using GridCNNExtractor (backbone: {backbone}) for 3D image observations.")
         policy_kwargs = {
             "features_extractor_class": GridCNNExtractor,
