@@ -45,13 +45,13 @@ def train_PPO_model(reward_fn,
                     "cnn6"
     """
     # guard against mismatches (flat obs with CNN extractor)
-    if arch is not None and obs_profile != "cnn6" and not is_att:
+    if arch is not None and obs_profile not in ("cnn6", "cnn7") and not is_att:
         raise ValueError("CNN backbone requested (arch set) but obs_profile is not 'cnn6'.")
 
     base_env = GridWorldEnv(
         reward_fn=reward_fn,
         grid_file=grid_file,
-        is_cnn=(obs_profile == "cnn6" or is_att or arch is not None),
+        is_cnn=(obs_profile == "cnn6" or obs_profile == "cnn7" or is_att or arch is not None),
         reset_kwargs=reset_kwargs,
         battery_truncation=battery_truncation,
         obs_profile=obs_profile
@@ -411,13 +411,13 @@ def load_model(experiment_folder: str,
     base_env = GridWorldEnv(
         reward_fn=reward_fn,
         grid_file=inferred_grid,
-        is_cnn=(obs_profile == "cnn6" or is_att),
+        is_cnn=(obs_profile in ("cnn6", "cnn7") or is_att),
         reset_kwargs=reset_kwargs,
         obs_profile=obs_profile
     )
 
     obs_wrapped_env = base_env
-    if obs_profile == "cnn6" or is_att:
+    if obs_profile == "cnn6" or obs_profile == "cnn7" or is_att:
         obs_wrapped_env = CustomGridCNNWrapper(obs_wrapped_env)
     if is_att:
         obs_wrapped_env = TimeStackObservation(obs_wrapped_env, num_frames=num_frames)
