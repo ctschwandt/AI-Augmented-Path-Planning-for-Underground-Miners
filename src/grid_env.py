@@ -350,7 +350,7 @@ class GridWorldEnv(Env):
             self.observation_space = Box(
             low=0.0,
             high=1.0,
-            shape=(6, self.n_rows, self.n_cols),
+            shape=(7, self.n_rows, self.n_cols),
             dtype=np.float32
             )
             
