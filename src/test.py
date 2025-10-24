@@ -206,7 +206,7 @@ def train_all_models(timesteps: int = 1_000_000):
 
     models_to_train = [
         {
-            "grid_file": "mine_100x100.txt",
+            "grid_file": "mine_50x50.txt",
             "arch": None,
             "reward_fn": get_reward_d,
             "is_att": True,
