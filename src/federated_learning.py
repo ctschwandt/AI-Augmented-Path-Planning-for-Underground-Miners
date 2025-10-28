@@ -50,12 +50,12 @@ def make_env(grid_file: str, reward_fn: Callable, obs_profile: str = "cnn7") -> 
 def make_ppo_for_env(env: GridWorldEnv,
                      grid_file: str,
                      features_dim: int = 128,
-                     round_id: int | None = None,
-                     client_id: int | None = None) -> PPO:
-    """
-    Create a PPO model for a given environment.
-    If round_id and client_id are provided, creates a unique TensorBoard log folder.
-    """
+                     round_id: int = None,
+                     client_id: int = None) -> PPO:
+    from stable_baselines3.common.vec_env import DummyVecEnv
+    vec_env = DummyVecEnv([lambda: env])
+
+    # choose per-round/client log dir if provided
     if round_id is not None and client_id is not None:
         log_dir = os.path.join(SAVE_DIR, "Federated_PPO_Split",
                                f"round_{round_id}_client_{client_id}")
@@ -63,16 +63,14 @@ def make_ppo_for_env(env: GridWorldEnv,
         log_dir = os.path.join(SAVE_DIR, "Federated_PPO_Split")
     os.makedirs(log_dir, exist_ok=True)
 
-    vec_env = DummyVecEnv([lambda: env])
-
     policy_kwargs = {
         "features_extractor_class": GridCNNExtractor,
         "features_extractor_kwargs": {
             "features_dim": features_dim,
             "grid_file": grid_file,
-            "backbone": "seq"
+            "backbone": "seq",
         },
-        "net_arch": dict(pi=[64, 64], vf=[64, 64])
+        "net_arch": dict(pi=[64, 64], vf=[64, 64]),
     }
 
     model = PPO(
@@ -89,7 +87,7 @@ def make_ppo_for_env(env: GridWorldEnv,
         clip_range_vf=0.5,
         verbose=1,
         tensorboard_log=log_dir,
-        policy_kwargs=policy_kwargs
+        policy_kwargs=policy_kwargs,
     )
     return model
 
@@ -166,15 +164,19 @@ def run_federated_split_training(
         # ---- Evaluate global model ----
         print(f"  [Eval] Testing global model on full 100x100 map...")
 
-        # local import avoids circular dependency
+        # local import avoids circular import with train.py
         from src.train import evaluate_model
+        from stable_baselines3.common.vec_env import DummyVecEnv
 
-        temp_model = copy.deepcopy(global_model)
-        temp_model.set_env(DummyVecEnv([lambda: eval_env]))
-        evaluate_model(eval_env, temp_model,
-                       n_eval_episodes=n_eval_episodes,
-                       render=False,
-                       verbose=True)
+        # temporarily swap env, evaluate, then restore
+        _prev_env = global_model.get_env()
+        try:
+            eval_vec = DummyVecEnv([lambda: eval_env])
+            global_model.set_env(eval_vec)
+            evaluate_model(eval_env, global_model, n_eval_episodes=n_eval_episodes, render=False, verbose=True)
+        finally:
+            # restore the original training env
+            global_model.set_env(_prev_env)
 
         # ---- Save checkpoint ----
         ckpt_path = os.path.join(SAVE_DIR, "Federated_PPO_Split", f"round_{r}.zip")
