@@ -121,7 +121,7 @@ def run_federated_split_training(
     obs_profile: str = "cnn7",
     aggregation_fn: Callable = fedavg,
     n_eval_episodes: int = 5
-):
+    ):
     """
     Perform federated learning by splitting the 100x100 grid into 4 50x50 local clients.
     Each client trains locally; the server aggregates with FedAvg after every round.
@@ -138,7 +138,7 @@ def run_federated_split_training(
     global_model = make_ppo_for_env(ref_env, quadrant_files[0])
 
     # Prepare eval environment
-    eval_env = make_env(global_grid_file, reward_fn)
+    eval_env = make_env(quadrant_files[0], reward_fn)
 
     for r in range(1, rounds + 1):
         print(f"\n================ Federated Round {r}/{rounds} ================")
