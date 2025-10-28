@@ -211,10 +211,10 @@ def train_all_models(timesteps: int = 1_000_000):
             "reward_fn": get_reward_d,
             "is_att": False,
             "fallback": False,
-            "tag": "federated_cnn7",
+            "tag": "federated_cnn7_1_round",
             "is_federated": True,
-            "federated_rounds": 20,
-            "local_steps": 50_000,
+            "federated_rounds": 1,
+            "local_steps": 1_000_000,
             # NEW: choose any of:
             # "with_last_without_miners", "with_last_with_miners",
             # "without_last_without_miners", "without_last_with_miners",

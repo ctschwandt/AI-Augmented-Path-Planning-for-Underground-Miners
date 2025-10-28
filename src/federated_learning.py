@@ -120,7 +120,7 @@ def run_federated_split_training(
     reward_fn_name: str = "get_reward_d",
     obs_profile: str = "cnn7",
     aggregation_fn: Callable = fedavg,
-    n_eval_episodes: int = 5
+    n_eval_episodes: int = 10000
     ):
     """
     Perform federated learning by splitting the 100x100 grid into 4 50x50 local clients.
@@ -173,7 +173,7 @@ def run_federated_split_training(
         try:
             eval_vec = DummyVecEnv([lambda: eval_env])
             global_model.set_env(eval_vec)
-            evaluate_model(eval_env, global_model, n_eval_episodes=n_eval_episodes, render=False, verbose=True)
+            evaluate_model(eval_env, global_model, n_eval_episodes=n_eval_episodes, render=False, verbose=False)
         finally:
             # restore the original training env
             global_model.set_env(_prev_env)
