@@ -14,6 +14,7 @@ from src.constants import *
 from src.plot_metrics import *
 from src.cnn_feature_extractor import CustomGridCNNWrapper, GridCNNExtractor, AgentFeatureMatrixWrapper, FeatureMatrixCNNExtractor
 import src.reward_functions as reward_functions
+from src.federated_learning import run_federated_split_training
 #import gymnasium as gym
 from src.attention import AttentionCNNExtractor
 from src.wrappers import TimeStackObservation
@@ -36,14 +37,31 @@ def train_PPO_model(reward_fn,
                     battery_truncation=False,
                     is_att: bool = False,
                     num_frames: int = 8,
-                    # NEW:
-                    obs_profile: str = "with_last_without_miners"):
+                    obs_profile: str = "with_last_without_miners",
+                    # Federated Learning
+                    is_federated: bool = False,
+                    federated_rounds: int = 20,
+                    local_steps: int = 50_000
+                    ):
     """
     Train PPO with a chosen observation profile.
     Valid profiles: "with_last_without_miners", "with_last_with_miners",
                     "without_last_without_miners", "without_last_with_miners",
                     "cnn6"
     """
+    if is_federated:
+        print("\n================ Federated Learning Mode Enabled ================")
+        print(f"Splitting {grid_file} into 4 local 50x50 maps and running {federated_rounds} rounds "
+              f"with {local_steps} steps per client.")
+        reward_fn_name = reward_fn.__name__
+        global_model = run_federated_split_training(
+            global_grid_file=grid_file,
+            rounds=federated_rounds,
+            local_steps=local_steps,
+            reward_fn_name=reward_fn_name,
+            obs_profile="cnn6"
+        )
+        return global_model
     # guard against mismatches (flat obs with CNN extractor)
     if arch is not None and obs_profile not in ("cnn6", "cnn7") and not is_att:
         raise ValueError("CNN backbone requested (arch set) but obs_profile is not 'cnn6'.")
