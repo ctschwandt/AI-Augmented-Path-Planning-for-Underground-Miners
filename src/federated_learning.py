@@ -11,6 +11,7 @@ from src.grid_env import GridWorldEnv
 from src.cnn_feature_extractor import GridCNNExtractor
 import src.reward_functions as reward_functions
 from src.federated_train_split import split_grid_into_quadrants
+from src.grid_env import CustomTensorboardCallback
 
 
 # ============================================================
@@ -95,21 +96,30 @@ def make_ppo_for_env(env: GridWorldEnv,
 # ============================================================
 # Federated Learning Orchestration
 # ============================================================
-def train_local_model(global_model: PPO,
-                      grid_file: str,
-                      reward_fn: Callable,
-                      local_steps: int = 50_000,
-                      round_id: int = 1,
-                      client_id: int = 1) -> PPO:
+def train_local_model(global_model: PPO, grid_file: str,
+                      reward_fn: Callable, local_steps: int = 1_000_000,
+                      round_id: int = 1, client_id: int = 1) -> PPO:
     """
     Train a local PPO model on one quadrant (grid_file) for a few steps.
+    Each client logs to its own TensorBoard directory with custom metrics.
     """
     local_env = make_env(grid_file, reward_fn)
+    log_dir = os.path.join(SAVE_DIR, "Federated_PPO_Split",
+                           f"round_{round_id}_client_{client_id}")
+    os.makedirs(log_dir, exist_ok=True)
+
     local_model = make_ppo_for_env(local_env, grid_file,
-                                   round_id=round_id,
-                                   client_id=client_id)
+                                   round_id=round_id, client_id=client_id)
+
+    # attach your custom metrics callback
+    callback = CustomTensorboardCallback(verbose=1)
+
+    # copy global policy weights
     local_model.policy.load_state_dict(copy.deepcopy(global_model.policy.state_dict()))
-    local_model.learn(total_timesteps=local_steps)
+
+    print(f"  ▶️ Client {client_id} starting local training for {local_steps:,} timesteps...")
+    local_model.learn(total_timesteps=local_steps, callback=callback)
+    print(f"  ✅ Client {client_id} finished training.")
     return local_model
 
 
