@@ -162,36 +162,47 @@ def build_default_cnn(in_channels, grid_file):
     GridCNN Backbone Construction Helper
     '''
     if grid_file and "100x100" in grid_file:
-        return nn.Sequential(
-            nn.Conv2d(in_channels, 32, kernel_size=3, stride=2, padding=1),    # (32, 50, 50)
-            nn.BatchNorm2d(32),
-            nn.ReLU(),
-
-            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),   # (64, 25, 25)
-            nn.BatchNorm2d(64),
-            nn.ReLU(),
-            nn.Dropout2d(0.1),
-
-            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),  # (128, 13, 13)
-            nn.BatchNorm2d(128),
-            nn.ReLU(),
-
-            nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1), # (256, 7, 7)
-            nn.BatchNorm2d(256),
-            nn.ReLU(),
-            nn.Dropout2d(0.1),
-
-            nn.Conv2d(256, 256, kernel_size=3, stride=2, padding=1), # (256, 4, 4)
-            nn.BatchNorm2d(256),
-            nn.ReLU(),
-
-            nn.Conv2d(256, 256, kernel_size=3, stride=2, padding=1), # (256, 2, 2)
-            nn.BatchNorm2d(256),
-            nn.ReLU(),
-
-            nn.AdaptiveAvgPool2d((1, 1)),  # (256, 1, 1)
-            nn.Flatten()
+    
+        def conv_block(in_ch, out_ch, stride=1, p_drop=0.05):
+            return nn.Sequential(
+                nn.Conv2d(in_ch, out_ch, kernel_size=3, stride=stride, padding=1, bias=False),
+                nn.GroupNorm(8, out_ch),
+                nn.SiLU(inplace=True),
+                nn.Dropout2d(p=p_drop)
             )
+
+        return nn.Sequential(
+            # Stage 1: preserve detail
+            conv_block(in_channels, 32, stride=1, p_drop=0.0),   # (32, 100, 100)
+            conv_block(32, 64, stride=1, p_drop=0.05),           # (64, 100, 100)
+
+            # Stage 2: start downsampling
+            conv_block(64, 128, stride=2, p_drop=0.05),          # (128, 50, 50)
+            conv_block(128, 128, stride=1, p_drop=0.05),         # (128, 50, 50)
+
+            # Stage 3: mid-level compression
+            conv_block(128, 192, stride=2, p_drop=0.05),         # (192, 25, 25)
+            conv_block(192, 192, stride=1, p_drop=0.05),         # (192, 25, 25)
+
+            # Stage 4: deeper abstraction
+            conv_block(192, 256, stride=2, p_drop=0.10),         # (256, 13, 13)
+            conv_block(256, 256, stride=1, p_drop=0.10),         # (256, 13, 13)
+
+            # Stage 5: compress spatial but retain some map
+            nn.Conv2d(256, 256, kernel_size=3, stride=2, padding=1, bias=False),  # (256, 7, 7)
+            nn.GroupNorm(8, 256),
+            nn.SiLU(inplace=True),
+            nn.Conv2d(256, 256, kernel_size=3, stride=2, padding=1, bias=False),  # (256, 4, 4)
+            nn.GroupNorm(8, 256),
+            nn.SiLU(inplace=True),
+
+            # Global spatial pooling (retain some local structure)
+            nn.AdaptiveAvgPool2d((4, 4)),  # (256, 4, 4)
+            nn.Flatten(),                  # 256 * 4 * 4 = 4096 features
+            nn.Linear(4096, 512),
+            nn.SiLU(inplace=True),
+            nn.Dropout(p=0.1)
+        )
     elif grid_file and "50x50" in grid_file: #c6: new channel
 
         return nn.Sequential(

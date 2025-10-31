@@ -14,6 +14,7 @@ from src.constants import *
 from src.plot_metrics import *
 from src.cnn_feature_extractor import CustomGridCNNWrapper, GridCNNExtractor, AgentFeatureMatrixWrapper, FeatureMatrixCNNExtractor
 import src.reward_functions as reward_functions
+from src.federated_learning import run_federated_split_training
 #import gymnasium as gym
 from src.attention import AttentionCNNExtractor
 from src.wrappers import TimeStackObservation
@@ -36,22 +37,39 @@ def train_PPO_model(reward_fn,
                     battery_truncation=False,
                     is_att: bool = False,
                     num_frames: int = 8,
-                    # NEW:
-                    obs_profile: str = "with_last_without_miners"):
+                    obs_profile: str = "with_last_without_miners",
+                    # Federated Learning
+                    is_federated: bool = False,
+                    federated_rounds: int = 20,
+                    local_steps: int = 50_000
+                    ):
     """
     Train PPO with a chosen observation profile.
     Valid profiles: "with_last_without_miners", "with_last_with_miners",
                     "without_last_without_miners", "without_last_with_miners",
                     "cnn6"
     """
+    if is_federated:
+        print("\n================ Federated Learning Mode Enabled ================")
+        print(f"Splitting {grid_file} into 4 local 50x50 maps and running {federated_rounds} rounds "
+              f"with {local_steps} steps per client.")
+        reward_fn_name = reward_fn.__name__
+        global_model = run_federated_split_training(
+            global_grid_file=grid_file,
+            rounds=federated_rounds,
+            local_steps=local_steps,
+            reward_fn_name=reward_fn_name,
+            obs_profile="cnn6"
+        )
+        return global_model
     # guard against mismatches (flat obs with CNN extractor)
-    if arch is not None and obs_profile != "cnn6" and not is_att:
+    if arch is not None and obs_profile not in ("cnn6", "cnn7") and not is_att:
         raise ValueError("CNN backbone requested (arch set) but obs_profile is not 'cnn6'.")
 
     base_env = GridWorldEnv(
         reward_fn=reward_fn,
         grid_file=grid_file,
-        is_cnn=(obs_profile == "cnn6" or is_att or arch is not None),
+        is_cnn=(obs_profile == "cnn6" or obs_profile == "cnn7" or is_att or arch is not None),
         reset_kwargs=reset_kwargs,
         battery_truncation=battery_truncation,
         obs_profile=obs_profile
@@ -79,8 +97,8 @@ def train_PPO_model(reward_fn,
             },
             "net_arch": dict(pi=[64, 64], vf=[64, 64])
         }
-    elif obs_profile == "cnn6" or arch is not None:
-        backbone = (arch or "resnet18").lower()
+    elif obs_profile == "cnn6" or obs_profile == "cnn7" or arch is not None:
+        backbone = (arch or "seq").lower()
         print(f"INFO: Using GridCNNExtractor (backbone: {backbone}) for 3D image observations.")
         policy_kwargs = {
             "features_extractor_class": GridCNNExtractor,
@@ -411,13 +429,13 @@ def load_model(experiment_folder: str,
     base_env = GridWorldEnv(
         reward_fn=reward_fn,
         grid_file=inferred_grid,
-        is_cnn=(obs_profile == "cnn6" or is_att),
+        is_cnn=(obs_profile in ("cnn6", "cnn7") or is_att),
         reset_kwargs=reset_kwargs,
         obs_profile=obs_profile
     )
 
     obs_wrapped_env = base_env
-    if obs_profile == "cnn6" or is_att:
+    if obs_profile == "cnn6" or obs_profile == "cnn7" or is_att:
         obs_wrapped_env = CustomGridCNNWrapper(obs_wrapped_env)
     if is_att:
         obs_wrapped_env = TimeStackObservation(obs_wrapped_env, num_frames=num_frames)

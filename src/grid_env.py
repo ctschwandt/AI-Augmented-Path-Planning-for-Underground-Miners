@@ -258,6 +258,24 @@ class GridWorldEnv(Env):
         self.use_observation_profile(obs_profile)
         self._init_spaces()
 
+        if not self.is_cnn:
+            # Determine correct obs length based on the active profile
+            prof = getattr(self, "_obs_getter", None).__name__ if hasattr(self, "_obs_getter") else ""
+            if "without_last" in prof:
+                obs_dim = 8 + 2 + 1 + self.n_sensors  # no +1 for last_action
+            else:
+                obs_dim = 8 + 2 + 1 + 1 + self.n_sensors  # includes last_action
+
+            if hasattr(self, "n_miners") and self.n_miners:
+                obs_dim += 2 * int(self.n_miners)
+
+            self.observation_space = gym.spaces.Box(
+                low=0.0,
+                high=1.0,
+                shape=(obs_dim,),
+                dtype=np.float32
+            )
+
         '''
         # radar around sensors
         self._init_radar_zone()
@@ -267,9 +285,20 @@ class GridWorldEnv(Env):
         self.reset()
 
     def _init_grid_config(self, grid_file, grid_height, grid_width, obstacle_percentage, n_sensors):
+        """
+        Initializes the grid, agent, goals, and sensors.
+        Ensures that observation_space will later match the true number of sensors.
+        """
         if grid_file:
             grid_path = os.path.join(FIXED_GRID_DIR, grid_file)
-            self.static_grid, self.agent_pos, self.goal_positions, self.sensor_batteries, self.base_station_positions = grid_gen.load_grid(grid_path)
+            (
+                self.static_grid,
+                self.agent_pos,
+                self.goal_positions,
+                self.sensor_batteries,
+                self.base_station_positions,
+            ) = grid_gen.load_grid(grid_path)
+
             self.n_rows, self.n_cols = self.static_grid.shape
             self.n_sensors = len(self.sensor_batteries)
 
@@ -278,19 +307,33 @@ class GridWorldEnv(Env):
                 "Must provide grid_height and grid_width when not using a grid_file."
             self.n_rows = grid_height
             self.n_cols = grid_width
-            save_path = os.path.join(RANDOM_GRID_DIR, f"grid_{self.n_rows}x{self.n_cols}{obstacle_percentage*100}p.txt")
-            
-            self.static_grid, self.agent_pos, self.goal_positions, self.sensor_batteries = grid_gen.gen_and_save_grid(
-                self.n_rows, self.n_cols,
+            save_path = os.path.join(
+                RANDOM_GRID_DIR,
+                f"grid_{self.n_rows}x{self.n_cols}{obstacle_percentage*100}p.txt"
+            )
+
+            (
+                self.static_grid,
+                self.agent_pos,
+                self.goal_positions,
+                self.sensor_batteries,
+            ) = grid_gen.gen_and_save_grid(
+                self.n_rows,
+                self.n_cols,
                 obstacle_percentage=obstacle_percentage,
                 n_sensors=n_sensors,
                 place_agent=False,
-                save_path=save_path
+                save_path=save_path,
             )
             self.base_station_positions = []
             self.n_sensors = n_sensors
-            
+
+        # Save reference for later resets
         self.original_sensor_batteries = self.sensor_batteries
+
+        # ✅ Do NOT call _init_spaces() here — self.is_cnn not yet defined
+        # The observation space will be finalized later in __init__ after is_cnn is set.
+
 
     def _init_spaces(self):
         # 4 cardinals dirs + 4 diagonals
@@ -307,7 +350,7 @@ class GridWorldEnv(Env):
             self.observation_space = Box(
             low=0.0,
             high=1.0,
-            shape=(6, self.n_rows, self.n_cols),
+            shape=(7, self.n_rows, self.n_cols),
             dtype=np.float32
             )
             
@@ -598,6 +641,7 @@ class GridWorldEnv(Env):
     
     def step(self, action):
         move = DIRECTION_MAP[int(action)]
+        self.last_action = int(action)
         old_pos = self.agent_pos
         new_pos = self.agent_pos + move
         self.episode_steps += 1
@@ -901,7 +945,8 @@ class GridWorldEnv(Env):
             "with_last_with_miners": (self._init_obs_with_last_with_miners,       self._obs_with_last_with_miners, False),
             "without_last_without_miners": (self._init_obs_without_last_without_miners, self._obs_without_last_without_miners, False),
             "without_last_with_miners": (self._init_obs_without_last_with_miners,    self._obs_without_last_with_miners, False),
-        "cnn6": (self._init_obs_cnn6, self._obs_cnn6, True),
+            "cnn6": (self._init_obs_cnn6, self._obs_cnn6, True),
+            "cnn7": (self._init_obs_cnn7, self.obs_cnn7, True)
         }
         
         if profile not in profiles:
@@ -1027,6 +1072,47 @@ class GridWorldEnv(Env):
         # ch5: miners
         for mr, mc in self.miners:
             obs[5, mr, mc] = 1.0
+
+        return obs
+    def _init_obs_cnn7(self):
+        # 6 channels
+        self.observation_space = Box(low=0.0, high=1.0,
+                                    shape=(7, self.n_rows, self.n_cols),
+                                    dtype=np.float32)
+
+    def obs_cnn7(self):
+        obs = np.zeros((7, self.n_rows, self.n_cols), dtype=np.float32)
+
+        # ch0: agent
+        ar, ac = self.agent_pos
+        obs[0, ar, ac] = 1.0
+
+        # ch1: blocked (obstacles, base stations)
+        for rr in range(self.n_rows):
+            for cc in range(self.n_cols):
+                if self.static_grid[rr, cc] in (OBSTACLE, BASE_STATION):
+                    obs[1, rr, cc] = 1.0
+
+        # ch2: sensor presence, ch3: sensor battery
+        obs[3, :, :] = -1.0
+        for (sr, sc), battery in self.sensor_batteries.items():
+            obs[2, sr, sc] = 1.0
+            obs[3, sr, sc] = battery / 100.0
+
+        # ch4: goals
+        for gr, gc in self.goal_positions:
+            obs[4, gr, gc] = 1.0
+
+        # ch5: miners
+        for mr, mc in self.miners:
+            obs[5, mr, mc] = 1.0
+        
+        # ch6: Last action
+        if self.last_action >= 0:
+            val = self.last_action / 7.0     # normalize 0–7 → 0–1
+        else:
+            val = -1.0                       # no previous action yet
+        obs[6, :, :] = val
 
         return obs
 
