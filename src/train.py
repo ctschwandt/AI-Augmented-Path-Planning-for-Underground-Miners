@@ -59,11 +59,11 @@ def train_PPO_model(reward_fn,
             rounds=federated_rounds,
             local_steps=local_steps,
             reward_fn_name=reward_fn_name,
-            obs_profile="cnn6",
+            obs_profile="cnn7",
             folder_name=folder_name,   # <-- NEW
         )
         return global_model
-        
+
     # guard against mismatches (flat obs with CNN extractor)
     if arch is not None and obs_profile not in ("cnn6", "cnn7") and not is_att:
         raise ValueError("CNN backbone requested (arch set) but obs_profile is not 'cnn6'.")
