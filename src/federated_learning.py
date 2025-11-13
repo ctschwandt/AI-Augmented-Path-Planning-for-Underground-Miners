@@ -150,9 +150,9 @@ def run_federated_split_training(
     reward_fn_name: str = "get_reward_d",
     obs_profile: str = "cnn7",
     aggregation_fn: Callable = fedavg,
-    n_eval_episodes: int = 10000,
+    n_eval_episodes: int = 10,
     folder_name: str | None = None,
-):
+    ):
     """
     Perform federated learning by splitting the 100x100 grid into 4 50x50 local clients.
     Each client trains locally; the server aggregates with FedAvg after every round.
