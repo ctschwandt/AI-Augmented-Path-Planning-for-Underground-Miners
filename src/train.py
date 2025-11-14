@@ -61,7 +61,7 @@ def train_PPO_model(reward_fn,
             reward_fn_name=reward_fn_name,
             obs_profile="cnn7",
             folder_name=folder_name,
-            identical_start=True  # <-- NEW
+            identical_start=True
         )
         return global_model
 
