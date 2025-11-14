@@ -85,8 +85,9 @@ def make_ppo_for_env(
         clip_range=0.2,
         clip_range_vf=0.5,
         verbose=1,
-        tensorboard_log=None,  # 🔴 NO TENSORBOARD LOGGING FOR CLIENTS OR GLOBAL TRAINING
+        tensorboard_log=None,  
         policy_kwargs=policy_kwargs,
+        device = "cpu"
     )
     return model
 
@@ -162,6 +163,7 @@ def _train_client_worker(args):
         verbose=1,
         tensorboard_log=None,  # 🔴 no TB logs per client
         policy_kwargs=policy_kwargs,
+        device = "cpu"
     )
 
     # Load global policy weights
