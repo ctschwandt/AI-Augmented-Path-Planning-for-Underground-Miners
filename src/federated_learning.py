@@ -1,17 +1,20 @@
 import os
 import copy
+from typing import List, Dict, Callable
+from concurrent.futures import ProcessPoolExecutor
+import shutil
+
 import numpy as np
 import torch
-from typing import List, Dict, Callable
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
+from torch.utils.tensorboard import SummaryWriter
 
 from src.constants import FIXED_GRID_DIR, SAVE_DIR
 from src.grid_env import GridWorldEnv, CustomTensorboardCallback
 from src.cnn_feature_extractor import GridCNNExtractor
 import src.reward_functions as reward_functions
 from src.federated_train_split import split_grid_into_quadrants
-from torch.utils.tensorboard import SummaryWriter
 
 
 # ============================================================
@@ -52,29 +55,12 @@ def make_ppo_for_env(
     env: GridWorldEnv,
     grid_file: str,
     features_dim: int = 128,
-    round_id: int | None = None,
-    client_id: int | None = None,
-    base_dir: str | None = None,
 ) -> PPO:
     """
     Create a PPO model for a given env.
-    Logs under:
-        base_dir/clients/round_<round_id>_client_<client_id>
-    or:
-        base_dir/clients
+    NOTE: tensorboard_log=None so this model will NOT create any TB event files.
     """
     vec_env = DummyVecEnv([lambda: env])
-
-    if base_dir is None:
-        # fallback if someone calls this without passing folder_name
-        base_dir = os.path.join(SAVE_DIR, "Federated_PPO_Split")
-
-    if round_id is not None and client_id is not None:
-        log_dir = os.path.join(base_dir, "clients", f"round_{round_id}_client_{client_id}")
-    else:
-        log_dir = os.path.join(base_dir, "clients")
-
-    os.makedirs(log_dir, exist_ok=True)
 
     policy_kwargs = {
         "features_extractor_class": GridCNNExtractor,
@@ -99,50 +85,101 @@ def make_ppo_for_env(
         clip_range=0.2,
         clip_range_vf=0.5,
         verbose=1,
-        tensorboard_log=log_dir,
+        tensorboard_log=None,  # 🔴 NO TENSORBOARD LOGGING FOR CLIENTS OR GLOBAL TRAINING
         policy_kwargs=policy_kwargs,
     )
     return model
 
 
 # ============================================================
-# Federated Learning Orchestration
+# Parallel client worker  (NO TensorBoard here)
 # ============================================================
-def train_local_model(
-    global_model: PPO,
-    grid_file: str,
-    reward_fn: Callable,
-    local_steps: int = 1_000_000,
-    round_id: int = 1,
-    client_id: int = 1,
-    base_dir: str | None = None,
-) -> PPO:
+def _train_client_worker(args):
     """
-    Train a local PPO model on one quadrant (grid_file) for a few steps.
-    Each client logs to its own TensorBoard directory with custom metrics.
-    """
-    local_env = make_env(grid_file, reward_fn)
+    Worker function to train one federated client in a separate process.
 
-    local_model = make_ppo_for_env(
-        local_env,
-        grid_file,
-        round_id=round_id,
-        client_id=client_id,
-        base_dir=base_dir,
+    Args tuple:
+        (quadrant_file, reward_fn_name, local_steps, round_id,
+         client_id, base_dir, obs_profile, global_policy_state_dict)
+    """
+    (
+        quadrant_file,
+        reward_fn_name,
+        local_steps,
+        round_id,
+        client_id,
+        base_dir,
+        obs_profile,
+        global_policy_state_dict,
+    ) = args
+
+    # Re-import inside worker (safe for subprocess)
+    import os
+    import torch
+    from stable_baselines3 import PPO
+    from stable_baselines3.common.vec_env import DummyVecEnv
+    from src.grid_env import GridWorldEnv, CustomTensorboardCallback
+    from src.cnn_feature_extractor import GridCNNExtractor
+    import src.reward_functions as reward_functions
+
+    if not hasattr(reward_functions, reward_fn_name):
+        raise ValueError(f"Reward function {reward_fn_name} not found in worker.")
+    reward_fn = getattr(reward_functions, reward_fn_name)
+
+    # Build env for this client
+    env = GridWorldEnv(
+        grid_file=quadrant_file,
+        reward_fn=reward_fn,
+        obs_profile=obs_profile,
+        is_cnn=True,
+    )
+    vec_env = DummyVecEnv([lambda: env])
+
+    # ⚠️ IMPORTANT:
+    # tensorboard_log=None → this worker does NOT create any TB event files.
+    policy_kwargs = {
+        "features_extractor_class": GridCNNExtractor,
+        "features_extractor_kwargs": {
+            "features_dim": 128,
+            "grid_file": quadrant_file,
+            "backbone": "seq",
+        },
+        "net_arch": dict(pi=[64, 64], vf=[64, 64]),
+    }
+
+    model = PPO(
+        policy="MlpPolicy",
+        env=vec_env,
+        ent_coef=0.1,
+        gae_lambda=0.90,
+        learning_rate=3e-4,
+        n_steps=2048,
+        batch_size=64,
+        n_epochs=10,
+        gamma=0.99,
+        clip_range=0.2,
+        clip_range_vf=0.5,
+        verbose=1,
+        tensorboard_log=None,  # 🔴 no TB logs per client
+        policy_kwargs=policy_kwargs,
     )
 
-    # attach your custom metrics callback
+    # Load global policy weights
+    model.policy.load_state_dict(global_policy_state_dict)
+
     callback = CustomTensorboardCallback(verbose=1)
 
-    # copy global policy weights
-    local_model.policy.load_state_dict(copy.deepcopy(global_model.policy.state_dict()))
+    print(f"  ▶️ [Worker] Client {client_id} starting local training for {local_steps:,} timesteps...")
+    model.learn(total_timesteps=local_steps, callback=callback)
+    print(f"  ✅ [Worker] Client {client_id} finished training.")
 
-    print(f"  ▶️ Client {client_id} starting local training for {local_steps:,} timesteps...")
-    local_model.learn(total_timesteps=local_steps, callback=callback)
-    print(f"  ✅ Client {client_id} finished training.")
-    return local_model
+    # Return only the policy weights (picklable)
+    return model.policy.state_dict()
 
 
+# ============================================================
+# Federated Learning Orchestration
+# ============================================================
 def run_federated_split_training(
     global_grid_file: str = "mine_100x100.txt",
     rounds: int = 20,
@@ -150,9 +187,9 @@ def run_federated_split_training(
     reward_fn_name: str = "get_reward_d",
     obs_profile: str = "cnn7",
     aggregation_fn: Callable = fedavg,
-    n_eval_episodes: int = 10,
+    n_eval_episodes: int = 10000,
     folder_name: str | None = None,
-    ):
+):
     """
     Perform federated learning by splitting the 100x100 grid into 4 50x50 local clients.
     Each client trains locally; the server aggregates with FedAvg after every round.
@@ -165,7 +202,8 @@ def run_federated_split_training(
         <SAVE_DIR>/<folder_name>/region_3
         <SAVE_DIR>/<folder_name>/region_4
 
-    These logs are appended across rounds, so you get a time series per region.
+    There is exactly ONE SummaryWriter per region, so for one full
+    federated run you get exactly 4 event files (one per region).
     """
     if not hasattr(reward_functions, reward_fn_name):
         raise ValueError(f"Reward function {reward_fn_name} not found.")
@@ -180,14 +218,22 @@ def run_federated_split_training(
     print("\n[SETUP] Splitting the 100x100 map into four 50x50 quadrants...")
     quadrant_files = split_grid_into_quadrants(global_grid_file)
 
-    # Initialize global model using quadrant 1
-    ref_env = make_env(quadrant_files[0], reward_fn)
-    global_model = make_ppo_for_env(ref_env, quadrant_files[0], base_dir=base_dir)
+    if identical_start:
+        q1_path = os.path.join(FIXED_GRID_DIR, quadrant_files[0])
+        for i in range(1, 4):
+            qi_path = os.path.join(FIXED_GRID_DIR, quadrant_files[i])
+            shutil.copyfile(q1_path, qi_path)
+        print("[DEBUG] identical_start=True → All 4 quadrant grids now have identical contents.")
+
+
+    # Initialize global model using quadrant 1, with correct obs_profile
+    ref_env = make_env(quadrant_files[0], reward_fn, obs_profile=obs_profile)
+    global_model = make_ppo_for_env(ref_env, quadrant_files[0])
 
     # Per-region eval envs (quadrants)
     region_envs = [make_env(qf, reward_fn, obs_profile=obs_profile) for qf in quadrant_files]
 
-    # Per-region TensorBoard writers
+    # Per-region TensorBoard writers  (ONE per region per whole run)
     region_writers: List[SummaryWriter] = []
     for i in range(4):
         region_logdir = os.path.join(base_dir, f"region_{i+1}")
@@ -198,25 +244,32 @@ def run_federated_split_training(
 
     for r in range(1, rounds + 1):
         print(f"\n================ Federated Round {r}/{rounds} ================")
-        local_models = []
 
-        # ---- Train each local client ----
+        # ---- Train each local client in PARALLEL (no TB logging) ----
+        print("  [Server] Spawning parallel client training workers...")
+        global_policy_state = copy.deepcopy(global_model.policy.state_dict())
+
+        worker_args = []
         for i, qf in enumerate(quadrant_files):
-            print(f"  [Client {i+1}] Training on {qf} ...")
-            local_model = train_local_model(
-                global_model,
-                qf,
-                reward_fn,
-                local_steps,
-                round_id=r,
-                client_id=i + 1,
-                base_dir=base_dir,
+            client_id = i + 1
+            worker_args.append(
+                (
+                    qf,                 # quadrant_file
+                    reward_fn_name,     # reward function name (string)
+                    local_steps,
+                    r,                  # round_id
+                    client_id,
+                    base_dir,
+                    obs_profile,
+                    global_policy_state,
+                )
             )
-            local_models.append(local_model)
+
+        with ProcessPoolExecutor(max_workers=len(quadrant_files)) as executor:
+            client_states = list(executor.map(_train_client_worker, worker_args))
 
         # ---- Aggregate client models ----
-        print(f"  [Server] Aggregating {len(local_models)} clients using {aggregation_fn.__name__} ...")
-        client_states = [m.policy.state_dict() for m in local_models]
+        print(f"  [Server] Aggregating {len(client_states)} clients using {aggregation_fn.__name__} ...")
         new_state = aggregation_fn(client_states)
         global_model.policy.load_state_dict(new_state)
 
@@ -301,6 +354,7 @@ def train_federated_100x100_split():
         reward_fn_name="get_reward_d",
         obs_profile="cnn7",
         aggregation_fn=fedavg,
-        n_eval_episodes=10,
-        folder_name="Federated_PPO_Split",  # default name if called directly
+        n_eval_episodes=0,
+        folder_name="Federated_PPO_Split",
+        identical_start: bool = False,
     )
