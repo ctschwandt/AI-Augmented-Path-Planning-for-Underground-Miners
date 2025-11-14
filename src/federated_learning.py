@@ -189,6 +189,7 @@ def run_federated_split_training(
     aggregation_fn: Callable = fedavg,
     n_eval_episodes: int = 10000,
     folder_name: str | None = None,
+    identical_start: bool = False
 ):
     """
     Perform federated learning by splitting the 100x100 grid into 4 50x50 local clients.
@@ -356,5 +357,5 @@ def train_federated_100x100_split():
         aggregation_fn=fedavg,
         n_eval_episodes=0,
         folder_name="Federated_PPO_Split",
-        identical_start: bool = False,
+        identical_start= True,
     )
