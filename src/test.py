@@ -211,7 +211,7 @@ def train_all_models(timesteps: int = 1_000_000):
             "reward_fn": get_reward_d,
             "is_att": False,
             "fallback": False,
-            "tag": "federated_cnn7_10_round_100000",
+            "tag": "federated_cnn7_10_round_100000_identical",
             "is_federated": True,
             "federated_rounds": 10,
             "local_steps": 100000,
