@@ -52,16 +52,19 @@ def train_PPO_model(reward_fn,
     if is_federated:
         print("\n================ Federated Learning Mode Enabled ================")
         print(f"Splitting {grid_file} into 4 local 50x50 maps and running {federated_rounds} rounds "
-              f"with {local_steps} steps per client.")
+            f"with {local_steps} steps per client.")
         reward_fn_name = reward_fn.__name__
         global_model = run_federated_split_training(
             global_grid_file=grid_file,
             rounds=federated_rounds,
             local_steps=local_steps,
             reward_fn_name=reward_fn_name,
-            obs_profile="cnn6"
+            obs_profile="cnn7",
+            folder_name=folder_name,
+            identical_start=True
         )
         return global_model
+
     # guard against mismatches (flat obs with CNN extractor)
     if arch is not None and obs_profile not in ("cnn6", "cnn7") and not is_att:
         raise ValueError("CNN backbone requested (arch set) but obs_profile is not 'cnn6'.")
@@ -288,7 +291,7 @@ def best_matching_grid(experiment_name: str, grid_dir: str) -> str:
 # training utils
 #-------------------------------------------------
 def evaluate_model(env, model, n_eval_episodes=20, sleep_time=0.1, render: bool = True, verbose: bool = True,
-                   halfsplit=False):
+                   halfsplit=False, return_metrics: bool = False):
     """
     Evaluate the model in the given environment for a number of episodes,
     printing agent's position, reward, and action at every timestep, and summarizing performance.
@@ -328,25 +331,19 @@ def evaluate_model(env, model, n_eval_episodes=20, sleep_time=0.1, render: bool 
                 if curr_bat == 0:
                     leq_0s += 1
 
-            # ===== Printout Info ===== #
             if verbose:
                 action_dir = ACTION_NAMES.get(int(action), f"Unknown({action})")
-
-                # 1. Print the main step information
                 print(f"Step {step_num}: Pos={agent_pos}, Action={action_dir} ({action_dir}), Reward={reward:.2f}")
 
-                # 2. Print the confidence and decision information (if available)
                 if 'used_fallback' in info:
                     confidence = info.get('confidence', 0)
                     if info.get('used_fallback'):
                         print(f"  └─ Decision: Agent uncertain (conf: {confidence:.3f}). Falling back to D* Lite.")
                     else:
                         print(f"  └─ Decision: Agent confident (conf: {confidence:.3f}). Using learned policy.")
-                
-                # 3. Print the subreward breakdown
+
                 for name, val in subrewards.items():
                     print(f"  └─ {name}: {val:.2f}")
-            #===========================#
 
             if render:
                 env.render_pygame()
@@ -382,6 +379,15 @@ def evaluate_model(env, model, n_eval_episodes=20, sleep_time=0.1, render: bool 
     print(f"Mean Battery Level per Episode: {mean_battery:.1f}")
     print(f"Timesteps Where Battery Level <= 10: {leq_10s}/{total_steps} ({leq_10s/total_steps * 100:.4f}%)")
     print(f"Timesteps Where Battery Level <= 0: {leq_0s}/{total_steps} ({leq_0s/total_steps * 100:.4f}%)")
+
+    if return_metrics:
+        # Exactly the three metrics you asked for
+        return dict(
+            mean_cumulative_reward=mean_reward,
+            mean_obstacle_hits=mean_col,
+            mean_battery=mean_battery,
+        )
+
 
 def load_model(experiment_folder: str,
                experiment_name: str,
