@@ -5,6 +5,7 @@ import numpy as np
 import torch
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
+from torch.utils.tensorboard import SummaryWriter
 
 from src.constants import FIXED_GRID_DIR, SAVE_DIR
 from src.grid_env import GridWorldEnv, CustomTensorboardCallback
@@ -51,11 +52,12 @@ def make_ppo_for_env(
     env: GridWorldEnv,
     grid_file: str,
     features_dim: int = 128,
+    tensorboard_log: str | None = None,
 ) -> PPO:
     """
     Create a PPO model for a given env.
 
-    Federated mode does not use SB3 TensorBoard logging.
+    Federated mode can optionally log SB3 metrics via tensorboard_log.
     """
     vec_env = DummyVecEnv([lambda: env])
 
@@ -82,7 +84,7 @@ def make_ppo_for_env(
         clip_range=0.2,
         clip_range_vf=0.5,
         verbose=1,
-        tensorboard_log=None,
+        tensorboard_log=tensorboard_log,
         policy_kwargs=policy_kwargs,
         device="cuda" if torch.cuda.is_available() else "cpu",
     )
@@ -99,15 +101,19 @@ def train_single_client(
     local_steps: int,
     obs_profile: str,
     client_id: int,
+    base_dir: str,
 ) -> Dict[str, torch.Tensor]:
     """
     Train ONE federated client sequentially in the current process.
     Returns the client's updated policy state_dict (on CPU).
     """
-    env = make_env(quadrant_file, reward_fn, obs_profile=obs_profile)
-    model = make_ppo_for_env(env, quadrant_file)
+    # each client gets its own SB3 TB log folder
+    tb_dir = os.path.join(base_dir, f"client_{client_id}")
+    os.makedirs(tb_dir, exist_ok=True)
 
-    # Load global weights into local model
+    env = make_env(quadrant_file, reward_fn, obs_profile=obs_profile)
+    model = make_ppo_for_env(env, quadrant_file, tensorboard_log=tb_dir)
+
     model.policy.load_state_dict(global_policy_state)
 
     callback = CustomTensorboardCallback(verbose=1)
@@ -131,15 +137,24 @@ def run_federated_split_training(
     reward_fn_name: str = "get_reward_d",
     obs_profile: str = "cnn7",
     aggregation_fn: Callable = fedavg,
+    n_eval_episodes: int = 10,
     folder_name: str | None = None,
     identical_start: bool = False,
 ):
     """
-    Perform federated learning by splitting the 100x100 grid into 4 50x50 local clients.
-    Each client trains locally; the server aggregates with FedAvg after every round.
+    Federated learning over 4 quadrants.
 
-    No evaluation is performed inside the loop or at the end.
-    Only checkpoints are saved.
+    - Clients are trained sequentially.
+    - After each round, the GLOBAL model is evaluated on each region.
+    - For each region we log:
+        global/mean_cumulative_reward
+        global/mean_obstacle_hits
+        global/mean_battery
+
+      into:
+        <SAVE_DIR>/<folder_name>/region_1
+        ...
+        <SAVE_DIR>/<folder_name>/region_4
     """
     # get reward function
     if not hasattr(reward_functions, reward_fn_name):
@@ -164,9 +179,19 @@ def run_federated_split_training(
             shutil.copyfile(q1_path, qi_path)
         print("[DEBUG] identical_start=True -> All 4 quadrant grids now have identical contents.")
 
-    # initialize global model using first quadrant
+    # initialize global model using first quadrant (no TB logging for global training)
     ref_env = make_env(quadrant_files[0], reward_fn, obs_profile=obs_profile)
-    global_model = make_ppo_for_env(ref_env, quadrant_files[0])
+    global_model = make_ppo_for_env(ref_env, quadrant_files[0], tensorboard_log=None)
+
+    # envs per region for global evaluation
+    region_envs = [make_env(qf, reward_fn, obs_profile=obs_profile) for qf in quadrant_files]
+
+    # writers per region for global metrics
+    region_writers: List[SummaryWriter] = []
+    for i in range(4):
+        region_logdir = os.path.join(base_dir, f"region_{i+1}")
+        os.makedirs(region_logdir, exist_ok=True)
+        region_writers.append(SummaryWriter(log_dir=region_logdir))
 
     cumulative_steps = 0
 
@@ -189,6 +214,7 @@ def run_federated_split_training(
                 local_steps=local_steps,
                 obs_profile=obs_profile,
                 client_id=client_id,
+                base_dir=base_dir,
             )
             client_states.append(client_state)
 
@@ -202,11 +228,62 @@ def run_federated_split_training(
 
         cumulative_steps += local_steps
 
+        # ==== Evaluate GLOBAL model on each region and log metrics ====
+        print("  Server: evaluating global model on 4 regions")
+
+        from src.train import evaluate_model
+
+        _prev_env = global_model.get_env()
+        try:
+            for idx, (region_env, writer) in enumerate(zip(region_envs, region_writers)):
+                eval_vec = DummyVecEnv([lambda env=region_env: env])
+                global_model.set_env(eval_vec)
+
+                stats = evaluate_model(
+                    env=region_env,
+                    model=global_model,
+                    n_eval_episodes=n_eval_episodes,
+                    render=False,
+                    verbose=False,
+                    return_metrics=True,
+                )
+
+                writer.add_scalar(
+                    "global/mean_cumulative_reward",
+                    stats["mean_cumulative_reward"],
+                    cumulative_steps,
+                )
+                writer.add_scalar(
+                    "global/mean_obstacle_hits",
+                    stats["mean_obstacle_hits"],
+                    cumulative_steps,
+                )
+                writer.add_scalar(
+                    "global/mean_battery",
+                    stats["mean_battery"],
+                    cumulative_steps,
+                )
+                writer.flush()
+
+                print(
+                    f"    Region {idx+1}: "
+                    f"Reward={stats['mean_cumulative_reward']:.2f}, "
+                    f"Obstacles={stats['mean_obstacle_hits']:.2f}, "
+                    f"Battery={stats['mean_battery']:.2f}"
+                )
+        finally:
+            if _prev_env is not None:
+                global_model.set_env(_prev_env)
+
         # save checkpoint after this round
         ckpt_path = os.path.join(base_dir, "checkpoints", f"round_{r}.zip")
         os.makedirs(os.path.dirname(ckpt_path), exist_ok=True)
         global_model.save(ckpt_path)
         print(f"  Server: saved global checkpoint to {ckpt_path}")
+
+    # close writers
+    for w in region_writers:
+        w.close()
 
     # final save
     final_path = os.path.join(base_dir, "global_final.zip")
@@ -226,6 +303,7 @@ def train_federated_100x100_split():
         reward_fn_name="get_reward_d",
         obs_profile="cnn7",
         aggregation_fn=fedavg,
+        n_eval_episodes=10,           # keep this small to avoid long eval times
         folder_name="Federated_PPO_Split",
         identical_start=False,
     )
