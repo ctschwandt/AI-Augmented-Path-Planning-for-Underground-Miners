@@ -232,51 +232,6 @@ def run_federated_split_training(
         # ---- Evaluate GLOBAL model on each region ----
         print(f"  [Eval] Testing global model on each of the 4 regions...")
 
-        # local import avoids circular import with train.py
-        from src.train import evaluate_model
-
-        _prev_env = global_model.get_env()
-        try:
-            for idx, (region_env, writer) in enumerate(zip(region_envs, region_writers)):
-                eval_vec = DummyVecEnv([lambda env=region_env: env])
-                global_model.set_env(eval_vec)
-
-                stats = evaluate_model(
-                    env=region_env,
-                    model=global_model,
-                    n_eval_episodes=n_eval_episodes,
-                    render=False,
-                    verbose=False,
-                    return_metrics=True,
-                )
-
-                writer.add_scalar(
-                    "global/mean_cumulative_reward",
-                    stats["mean_cumulative_reward"],
-                    cumulative_steps,
-                )
-                writer.add_scalar(
-                    "global/mean_obstacle_hits",
-                    stats["mean_obstacle_hits"],
-                    cumulative_steps,
-                )
-                writer.add_scalar(
-                    "global/mean_battery",
-                    stats["mean_battery"],
-                    cumulative_steps,
-                )
-                writer.flush()
-
-                print(
-                    f"    [Region {idx+1}] "
-                    f"Reward={stats['mean_cumulative_reward']:.2f}, "
-                    f"Obstacles={stats['mean_obstacle_hits']:.2f}, "
-                    f"Battery={stats['mean_battery']:.2f}"
-                )
-        finally:
-            if _prev_env is not None:
-                global_model.set_env(_prev_env)
-
         # ---- Save global checkpoint ----
         ckpt_path = os.path.join(base_dir, "checkpoints", f"round_{r}.zip")
         os.makedirs(os.path.dirname(ckpt_path), exist_ok=True)
