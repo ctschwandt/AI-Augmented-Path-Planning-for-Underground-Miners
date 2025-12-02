@@ -6,6 +6,7 @@ import torch
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
 from torch.utils.tensorboard import SummaryWriter
+from stable_baselines3.common.callbacks import BaseCallback
 
 from src.constants import FIXED_GRID_DIR, SAVE_DIR
 from src.grid_env import GridWorldEnv, CustomTensorboardCallback
@@ -34,6 +35,67 @@ def fedavg(policy_state_dicts: List[Dict[str, torch.Tensor]],
     for k in policy_state_dicts[0].keys():
         new_state[k] = sum(sd[k] * weights[i] for i, sd in enumerate(policy_state_dicts))
     return new_state
+
+
+# ============================================================
+# Custom Callback for Continuous Federated Logging
+# ============================================================
+class FederatedClientCallback(BaseCallback):
+    """
+    Logs metrics to an external SummaryWriter to ensure continuous logging
+    across federated rounds (which involve re-instantiating the model).
+    """
+    def __init__(self, writer: SummaryWriter, initial_steps: int, verbose=0):
+        super().__init__(verbose)
+        self.writer = writer
+        self.initial_steps = initial_steps
+
+    def _flatten_info(self, info):
+        flat = {}
+        subrewards = {}
+        for k, v in info.items():
+            if k == "subrewards" and isinstance(v, dict):
+                for sub_k, sub_v in v.items():
+                    subrewards[f"{sub_k}"] = sub_v
+            elif not isinstance(v, (dict, list)):
+                flat[k] = v
+        return flat, subrewards
+
+    def _on_step(self) -> bool:
+        # Current global timestep
+        current_step = self.initial_steps + self.num_timesteps
+
+        infos = self.locals.get("infos", [])
+        for info in infos:
+            if not info:
+                continue
+
+            flat_info, subrewards_info = self._flatten_info(info)
+
+            # Split metrics
+            timestep_keys = [
+                "current_reward", "current_battery",
+                "distance_to_goal",
+                "terminated", "truncated"
+            ]
+            episode_keys = [
+                "cumulative_reward", "obstacle_hits",
+                "visited_count", "average_battery_level",
+                "episode_length", "revisit_count"
+            ]
+
+            timestep_data = {k: flat_info.get(k) for k in timestep_keys if k in flat_info}
+            episode_data = {k: flat_info.get(k) for k in episode_keys if k in flat_info}
+
+            # TensorBoard logging
+            for k, v in timestep_data.items():
+                self.writer.add_scalar(f"timestep/{k}", v, current_step)
+            for k, v in episode_data.items():
+                self.writer.add_scalar(f"episode/{k}", v, current_step)
+            for k, v in subrewards_info.items():
+                self.writer.add_scalar(f"subrewards/{k}", v, current_step)
+        
+        return True
 
 
 # ============================================================
@@ -102,23 +164,25 @@ def train_single_client(
     obs_profile: str,
     client_id: int,
     base_dir: str,
+    client_writer: SummaryWriter,
+    initial_steps: int
 ) -> Dict[str, torch.Tensor]:
     """
     Train ONE federated client sequentially in the current process.
     Returns the client's updated policy state_dict (on CPU).
     """
-    # each client gets its own SB3 TB log folder
-    tb_dir = os.path.join(base_dir, f"client_{client_id}")
-    os.makedirs(tb_dir, exist_ok=True)
-
+    # We do NOT use SB3's tensorboard_log here to avoid fragmentation.
+    # Instead we use our custom FederatedClientCallback with the external writer.
+    
     env = make_env(quadrant_file, reward_fn, obs_profile=obs_profile)
-    model = make_ppo_for_env(env, quadrant_file, tensorboard_log=tb_dir)
+    model = make_ppo_for_env(env, quadrant_file, tensorboard_log=None)
 
     model.policy.load_state_dict(global_policy_state)
 
-    callback = CustomTensorboardCallback(verbose=1)
+    # Use our custom callback for continuous logging
+    callback = FederatedClientCallback(writer=client_writer, initial_steps=initial_steps, verbose=1)
 
-    print(f"  Client {client_id} starting local training for {local_steps:,} timesteps...")
+    print(f"  Client {client_id} starting local training for {local_steps:,} timesteps (Global Step: {initial_steps})...")
     model.learn(total_timesteps=local_steps, callback=callback)
     print(f"  Client {client_id} finished training.")
 
@@ -193,7 +257,15 @@ def run_federated_split_training(
         os.makedirs(region_logdir, exist_ok=True)
         region_writers.append(SummaryWriter(log_dir=region_logdir))
 
-    cumulative_steps = 0
+    # writers per client for local training metrics (continuous)
+    client_writers: List[SummaryWriter] = []
+    for i in range(4):
+        client_logdir = os.path.join(base_dir, f"client_{i+1}")
+        os.makedirs(client_logdir, exist_ok=True)
+        client_writers.append(SummaryWriter(log_dir=client_logdir))
+
+    cumulative_steps = 0 # Global steps (rounds * local_steps)
+    total_client_steps = 0 # Accumulated steps for clients
 
     for r in range(1, rounds + 1):
         print(f"\n================ Federated Round {r}/{rounds} ================")
@@ -215,6 +287,8 @@ def run_federated_split_training(
                 obs_profile=obs_profile,
                 client_id=client_id,
                 base_dir=base_dir,
+                client_writer=client_writers[i],
+                initial_steps=total_client_steps
             )
             client_states.append(client_state)
 
@@ -227,6 +301,7 @@ def run_federated_split_training(
         global_model.policy.load_state_dict(new_state_device)
 
         cumulative_steps += local_steps
+        total_client_steps += local_steps
 
         # ==== Evaluate GLOBAL model on each region and log metrics ====
         print("  Server: evaluating global model on 4 regions")
@@ -283,6 +358,8 @@ def run_federated_split_training(
 
     # close writers
     for w in region_writers:
+        w.close()
+    for w in client_writers:
         w.close()
 
     # final save
