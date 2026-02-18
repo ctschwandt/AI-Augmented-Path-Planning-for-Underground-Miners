@@ -4,4 +4,6 @@ This project explores **AI-augmented path planning** in underground mines, using
 
 It was developed as part of research at **Missouri University of Science & Technology (Missouri S&T)** on energy-aware navigation in underground mining environments.
 
+[Video demo](https://youtu.be/zd4WVs42iVQ)
+
 ---
